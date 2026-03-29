@@ -11,3 +11,7 @@ specific lab repository.
 - Day-1 workflow (`cluster.sh`)
 - Day-2 workflow (`talos-gitops.sh`)
 - Upgrade and migration guidance
+
+## Available Guides
+
+- Day-1 project variables: `docs/en/day1-project-vars.md`

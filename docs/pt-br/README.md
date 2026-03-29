@@ -11,3 +11,7 @@ um repositorio de laboratorio especifico.
 - Fluxo day-1 (`cluster.sh`)
 - Fluxo day-2 (`talos-gitops.sh`)
 - Guia de migracao e atualizacao
+
+## Guias Disponiveis
+
+- Variaveis de projeto day-1: `docs/pt-br/day1-project-vars.md`

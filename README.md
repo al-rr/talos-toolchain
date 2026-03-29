@@ -13,6 +13,8 @@ and day-2 contract.
 
 - English: `docs/en/README.md`
 - Portuguese (Brazil): `docs/pt-br/README.md`
+- Day-1 project variables (EN): `docs/en/day1-project-vars.md`
+- Variaveis de projeto day-1 (PT-BR): `docs/pt-br/day1-project-vars.md`
 
 ## Current Status
 
