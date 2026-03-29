@@ -1,0 +1,13 @@
+# Documentation Index (EN)
+
+## Repository Purpose
+
+`talos-toolchain` provides reusable Talos automation independent from a
+specific lab repository.
+
+## Planned Sections
+
+- Architecture and boundaries
+- Day-1 workflow (`cluster.sh`)
+- Day-2 workflow (`talos-gitops.sh`)
+- Upgrade and migration guidance
