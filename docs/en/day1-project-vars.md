@@ -99,6 +99,27 @@ export TALOS_CLUSTER_BASELINE_ADDONS='["cilium","longhorn"]'
 export TALOS_DAY1_KUBE_CONTEXT="talos-dev-admin"
 ```
 
+## vSphere Connection Variables (when using govc-backed mappings)
+
+If your mapped commands use vSphere provisioning scripts, define these in
+`vars.local.sh`:
+
+```bash
+export VSPHERE_ENDPOINT="192.168.0.233"
+export VSPHERE_USERNAME="root"
+export VSPHERE_PASSWORD="CHANGE_ME"
+export VSPHERE_INSECURE_CONNECTION="true"
+export VSPHERE_DATASTORE="DATASTORE_02"
+export VSPHERE_NETWORK="VM Network"
+export VSPHERE_FOLDER=""
+export VSPHERE_RESOURCE_POOL=""
+export SSH_USER="vagrant"
+export HAPROXY_SSH_USER="vagrant"
+```
+
+These are not consumed directly by `cluster.sh`. They are consumed by the
+commands referenced in `TALOS_DAY1_*_CMD`.
+
 ## Execution Order Reference
 
 1. `cluster.sh create-project --project-dir=...`
@@ -110,4 +131,3 @@ export TALOS_DAY1_KUBE_CONTEXT="talos-dev-admin"
 7. `cluster.sh bootstrap --project-dir=...`
 8. `cluster.sh apply-post-bootstrap --project-dir=...`
 9. `cluster.sh sync-access --project-dir=...`
-

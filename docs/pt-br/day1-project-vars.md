@@ -99,6 +99,27 @@ Override local em `vars.local.sh`:
 export TALOS_DAY1_KUBE_CONTEXT="talos-dev-admin"
 ```
 
+## Variaveis De Conexao vSphere (quando usar mapeamentos baseados em govc)
+
+Se os comandos mapeados usarem scripts de provisionamento em vSphere, defina em
+`vars.local.sh`:
+
+```bash
+export VSPHERE_ENDPOINT="192.168.0.233"
+export VSPHERE_USERNAME="root"
+export VSPHERE_PASSWORD="CHANGE_ME"
+export VSPHERE_INSECURE_CONNECTION="true"
+export VSPHERE_DATASTORE="DATASTORE_02"
+export VSPHERE_NETWORK="VM Network"
+export VSPHERE_FOLDER=""
+export VSPHERE_RESOURCE_POOL=""
+export SSH_USER="vagrant"
+export HAPROXY_SSH_USER="vagrant"
+```
+
+Essas variaveis nao sao consumidas diretamente pelo `cluster.sh`. Elas sao
+consumidas pelos comandos referenciados em `TALOS_DAY1_*_CMD`.
+
 ## Ordem de Execucao (Referencia)
 
 1. `cluster.sh create-project --project-dir=...`
@@ -110,4 +131,3 @@ export TALOS_DAY1_KUBE_CONTEXT="talos-dev-admin"
 7. `cluster.sh bootstrap --project-dir=...`
 8. `cluster.sh apply-post-bootstrap --project-dir=...`
 9. `cluster.sh sync-access --project-dir=...`
-
