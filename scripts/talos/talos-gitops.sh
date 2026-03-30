@@ -19,6 +19,7 @@
 # @arg --kubeconfig path Kubeconfig override path.
 # @arg --kube-context name Kubernetes context (required).
 # @arg --cilium-rollout-timeout duration Timeout for Cilium rollout fallback.
+# @flag --allow-system-addon Allow install-addon for system-excluded addons (intended for day-1 baseline orchestration).
 # @flag --dry-run,-n Print actions without executing.
 # @flag --help,-h Show usage information.
 #
@@ -49,6 +50,7 @@ KUBECONFIG_PATH=""
 KUBE_CONTEXT=""
 CILIUM_ROLLOUT_TIMEOUT="300s"
 DRY_RUN="false"
+ALLOW_SYSTEM_ADDON="false"
 KNOWN_WARNINGS_REGEX='(Warning: unrecognized format "int64"|warnings\.go:[0-9]+] "Warning: unrecognized format \\"int64\\"")'
 
 usage() {
@@ -71,6 +73,7 @@ Options:
   --kubeconfig=<path>            Kubeconfig path override (default: KUBECONFIG or ~/.kube/config)
   --kube-context=<name>          Kubernetes context to execute against (required)
   --cilium-rollout-timeout=<dur> Timeout for Cilium rollout wait when cilium CLI is unavailable (default: 300s)
+  --allow-system-addon           Allow install-addon for system-excluded addons (day-1 only)
   -n, --dry-run                  Print actions without executing
   -h, --help                     Show help
 
@@ -112,6 +115,7 @@ parse_args() {
       --kubeconfig=*) KUBECONFIG_PATH="${1#*=}"; shift ;;
       --kube-context=*) KUBE_CONTEXT="${1#*=}"; shift ;;
       --cilium-rollout-timeout=*) CILIUM_ROLLOUT_TIMEOUT="${1#*=}"; shift ;;
+      --allow-system-addon) ALLOW_SYSTEM_ADDON="true"; shift ;;
       -n|--dry-run) DRY_RUN="true"; shift ;;
       -h|--help) usage; exit 0 ;;
       *) usage; die "Unknown argument: $1" ;;
@@ -561,7 +565,7 @@ main() {
         mapfile -t system_exclude < <(csv_to_array "${system_exclude_csv}")
         for system_exclude_item in "${system_exclude[@]}"; do
           [[ -n "${system_exclude_item}" ]] || continue
-          if [[ "${system_exclude_item}" == "${ADDON_NAME}" ]]; then
+          if [[ "${system_exclude_item}" == "${ADDON_NAME}" && "${ALLOW_SYSTEM_ADDON}" != "true" ]]; then
             die "Addon '${ADDON_NAME}' is system-excluded in day-2 flow."
           fi
         done
