@@ -2,8 +2,9 @@
 # @file talos-gitops.sh
 # @brief Unified day-2 GitOps operations for Talos clusters.
 # @description
-#   Installs platform Helm addons from GitOps manifests and deploys Argo CD root app.
-#   Enforces explicit kube-context targeting and system addon exclusions for safer execution.
+#   Installs platform Helm addons from GitOps manifests and deploys the Argo CD
+#   root app. Enforces explicit kube-context targeting and system addon exclusions
+#   for safer execution.
 #
 # @arg install-platform-helm action Install/update eligible platform Helm addons.
 # @arg install-addon action Install/update one specific Helm addon.
@@ -19,17 +20,16 @@
 # @arg --kubeconfig path Kubeconfig override path.
 # @arg --kube-context name Kubernetes context (required).
 # @arg --cilium-rollout-timeout duration Timeout for Cilium rollout fallback.
-# @flag --allow-system-addon Allow install-addon for system-excluded addons (intended for day-1 baseline orchestration).
 # @flag --dry-run,-n Print actions without executing.
 # @flag --help,-h Show usage information.
 #
 # @example
-#   # Install all eligible platform addons for one environment
-#   ./talos-gitops.sh install-platform-helm --kube-context=admin@talos-dev --manifest-root-dir=/home/vagrant/talos-vsphere-gitops/environments/lab
+#   # Install all eligible platform addons
+#   ./talos-gitops.sh install-platform-helm --kube-context=admin@talos-dev --manifest-root-dir=./manifests
 #
 # @example
 #   # Install one addon only during iterative tests
-#   ./talos-gitops.sh install-addon --kube-context=admin@talos-dev --manifest-root-dir=/home/vagrant/talos-vsphere-gitops/environments/lab --addon=cert-manager
+#   ./talos-gitops.sh install-addon --kube-context=admin@talos-dev --manifest-root-dir=./manifests --addon=cert-manager
 set -euo pipefail
 
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
@@ -50,7 +50,6 @@ KUBECONFIG_PATH=""
 KUBE_CONTEXT=""
 CILIUM_ROLLOUT_TIMEOUT="300s"
 DRY_RUN="false"
-ALLOW_SYSTEM_ADDON="false"
 KNOWN_WARNINGS_REGEX='(Warning: unrecognized format "int64"|warnings\.go:[0-9]+] "Warning: unrecognized format \\"int64\\"")'
 
 usage() {
@@ -73,28 +72,27 @@ Options:
   --kubeconfig=<path>            Kubeconfig path override (default: KUBECONFIG or ~/.kube/config)
   --kube-context=<name>          Kubernetes context to execute against (required)
   --cilium-rollout-timeout=<dur> Timeout for Cilium rollout wait when cilium CLI is unavailable (default: 300s)
-  --allow-system-addon           Allow install-addon for system-excluded addons (day-1 only)
   -n, --dry-run                  Print actions without executing
   -h, --help                     Show help
 
 Examples:
   # Install all platform addons except system/user excluded ones
-  $(basename "$0") install-platform-helm --kube-context=admin@talos-dev --manifest-root-dir=/home/vagrant/talos-vsphere-gitops/environments/lab
+  $(basename "$0") install-platform-helm --kube-context=admin@talos-dev --manifest-root-dir=./manifests
 
   # Install only one addon during iterative testing
-  $(basename "$0") install-addon --kube-context=admin@talos-dev --manifest-root-dir=/home/vagrant/talos-vsphere-gitops/environments/lab --addon=cert-manager
+  $(basename "$0") install-addon --kube-context=admin@talos-dev --manifest-root-dir=./manifests --addon=cert-manager
 
   # Install only selected addons via list override
-  $(basename "$0") install-platform-helm --kube-context=admin@talos-dev --helm-manifest-dir=/home/vagrant/talos-vsphere-gitops/environments/lab/helm --addons='["longhorn"]'
+  $(basename "$0") install-platform-helm --kube-context=admin@talos-dev --helm-manifest-dir=./manifests/helm --addons='["longhorn"]'
 
   # Exclude specific addons in addition to system exclusions
-  $(basename "$0") install-platform-helm --kube-context=admin@talos-dev --manifest-root-dir=/home/vagrant/talos-vsphere-gitops/environments/lab --exclude-addons='["longhorn"]'
+  $(basename "$0") install-platform-helm --kube-context=admin@talos-dev --manifest-root-dir=./manifests --exclude-addons='["longhorn"]'
 
   # Deploy only Argo CD root app
-  $(basename "$0") deploy-argocd-root-app --kube-context=admin@talos-dev --manifest-root-dir=/home/vagrant/talos-vsphere-gitops/environments/lab
+  $(basename "$0") deploy-argocd-root-app --kube-context=admin@talos-dev --manifest-root-dir=./manifests
 
   # Full day-2 flow in one command
-  $(basename "$0") configure-talos-cluster-tools --kube-context=admin@talos-dev --manifest-root-dir=/home/vagrant/talos-vsphere-gitops/environments/lab
+  $(basename "$0") configure-talos-cluster-tools --kube-context=admin@talos-dev --manifest-root-dir=./manifests
 EOF_USAGE
 }
 
@@ -115,7 +113,6 @@ parse_args() {
       --kubeconfig=*) KUBECONFIG_PATH="${1#*=}"; shift ;;
       --kube-context=*) KUBE_CONTEXT="${1#*=}"; shift ;;
       --cilium-rollout-timeout=*) CILIUM_ROLLOUT_TIMEOUT="${1#*=}"; shift ;;
-      --allow-system-addon) ALLOW_SYSTEM_ADDON="true"; shift ;;
       -n|--dry-run) DRY_RUN="true"; shift ;;
       -h|--help) usage; exit 0 ;;
       *) usage; die "Unknown argument: $1" ;;
@@ -565,7 +562,7 @@ main() {
         mapfile -t system_exclude < <(csv_to_array "${system_exclude_csv}")
         for system_exclude_item in "${system_exclude[@]}"; do
           [[ -n "${system_exclude_item}" ]] || continue
-          if [[ "${system_exclude_item}" == "${ADDON_NAME}" && "${ALLOW_SYSTEM_ADDON}" != "true" ]]; then
+          if [[ "${system_exclude_item}" == "${ADDON_NAME}" ]]; then
             die "Addon '${ADDON_NAME}' is system-excluded in day-2 flow."
           fi
         done

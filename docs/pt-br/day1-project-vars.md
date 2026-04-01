@@ -1,72 +1,92 @@
 # Variaveis de Projeto Day-1 (`cluster.sh`)
 
-Este documento explica as variaveis de projeto usadas pelo
-`scripts/talos/cluster.sh`.
+Este documento descreve as variaveis de projeto consumidas por
+[`scripts/talos/cluster.sh`](/home/vagrant/talos-toolchain/scripts/talos/cluster.sh).
 
 ## Escopo
 
-Essas variaveis ficam dentro de cada projeto gerado (por exemplo
-`clusters/talos-dev/vars.sh` e `vars.local.sh`).
+Cada projeto de cluster gerado e a fonte de verdade das operacoes de day-1.
 
-O `cluster.sh` nao usa `--env`. O projeto e a fonte de verdade.
+Estrutura tipica:
 
-## Modelo de Arquivos
+- `vars.sh`: baseline versionado do projeto
+- `vars.local.sh`: overrides locais ou sensiveis, sem commit
+- `patches/`: patches de machine config renderizados/aplicados no day-1
+- `generated/`: artefatos gerados do Talos
 
-- `vars.sh`: baseline versionado do projeto.
-- `vars.local.sh`: overrides locais (sensivel ou especifico da maquina), sem commit.
+O `cluster.sh` carrega primeiro `vars.sh` e depois `vars.local.sh`, se existir.
 
-O `cluster.sh` carrega primeiro `vars.sh` e depois `vars.local.sh` (se existir).
+## Contrato Atual
 
-## Variaveis Obrigatorias de Mapeamento de Comandos
+O `cluster.sh` atual nao usa mais mapeamentos `TALOS_DAY1_*`.
+Essas variaveis foram removidas.
 
-Essas variaveis sao obrigatorias para executar as actions de day-1:
+O contrato agora e:
 
-- `TALOS_DAY1_GENERATE_CMD`
-- `TALOS_DAY1_PROVISION_CMD`
-- `TALOS_DAY1_PREPARE_BOOTSTRAP_CMD`
-- `TALOS_DAY1_APPLY_CONFIG_CMD`
-- `TALOS_DAY1_BOOTSTRAP_CMD`
-- `TALOS_DAY1_SYNC_ACCESS_CMD`
+- orientado a projeto
+- orientado a actions
+- baseado nas variaveis geradas por `create-project`
 
-Se alguma estiver vazia, o `cluster.sh` falha com erro explicito naquela action.
+Isso significa que o proprio `cluster.sh` controla diretamente o fluxo de day-1:
 
-## Variaveis de Baseline de Addons (`apply-post-bootstrap`)
+1. `generate`
+2. `provision`
+3. `prepare-bootstrap`
+4. `apply-config`
+5. `bootstrap`
+6. `apply-post-bootstrap`
+7. `sync-access`
 
-- `TALOS_CLUSTER_BASELINE_ADDONS`
-  - Lista JSON de addons para instalar no post-bootstrap baseline.
-  - Valor padrao gerado: `["cilium"]`.
-- `TALOS_DAY1_REQUIRE_CILIUM`
-  - `true`/`false`.
-  - Se `true`, `cilium` precisa existir na lista de baseline.
-- `TALOS_DAY1_MANIFEST_ROOT_DIR`
-  - Diretorio raiz que contem manifests/charts dos addons.
-- `TALOS_DAY1_KUBE_CONTEXT`
-  - Contexto Kubernetes usado para instalar addons no post-bootstrap.
+## Variaveis Principais
 
-Voce pode sobrescrever em runtime com:
+Os defaults gerados incluem estes grupos.
 
-- `--addons=...`
-- `--manifest-root-dir=...`
-- `--kube-context=...`
-
-## Variaveis de Imagem (`refresh-schematics`)
-
-- `TALOS_CONTROL_PLANE_INSTALLER_IMAGE`
-- `TALOS_WORKER_INSTALLER_IMAGE`
-- `TALOS_OVA_PATH`
-
-O `refresh-schematics` atualiza esses valores usando IDs de schematic do Talos Factory.
-
-## Variaveis Comuns de Topologia / Rede
-
-Defaults gerados:
+### Identidade do cluster
 
 - `TALOS_CLUSTER_NAME`
 - `TALOS_CLUSTER_ENDPOINT`
-- `TALOS_GATEWAY`
-- `TALOS_NETMASK_PREFIX`
-- `TALOS_NODE_INTERFACE`
-- `TALOS_NAMESERVERS`
+
+### Destino vSphere
+
+- `VSPHERE_ENDPOINT`
+- `VSPHERE_USERNAME`
+- `VSPHERE_PASSWORD`
+- `VSPHERE_INSECURE_CONNECTION`
+- `VSPHERE_DATASTORE`
+- `VSPHERE_NETWORK`
+- `VSPHERE_FOLDER`
+- `VSPHERE_RESOURCE_POOL`
+
+### Identidade de acesso
+
+- `BUILD_USERNAME`
+- `SSH_USER`
+- `SSH_PORT`
+- `HAPROXY_SSH_USER`
+- `ANSIBLE_USER`
+- `ANSIBLE_USERNAME`
+
+### Topologia do load balancer
+
+- `HAPROXY_VIP`
+- `HAPROXY_NODE_1_NAME`
+- `HAPROXY_NODE_1_IP`
+- `HAPROXY_NODE_2_NAME`
+- `HAPROXY_NODE_2_IP`
+
+### Imagens do Talos
+
+- `TALOS_OVA_PATH`
+- `TALOS_ISO_DATASTORE_PATH`
+- `TALOS_ISO_LOCAL_PATH`
+- `TALOS_CONTROL_PLANE_INSTALLER_IMAGE`
+- `TALOS_WORKER_INSTALLER_IMAGE`
+
+O `refresh-schematics` atualiza as variaveis de installer image e tambem pode
+reescrever `TALOS_OVA_PATH`.
+
+### Topologia
+
 - `TALOS_CONTROL_PLANE_COUNT`
 - `TALOS_WORKER_COUNT`
 - `TALOS_CONTROL_PLANE_IPS`
@@ -74,60 +94,104 @@ Defaults gerados:
 - `TALOS_CONTROL_PLANE_NAME_PREFIX`
 - `TALOS_WORKER_NAME_PREFIX`
 
-Essas variaveis sao insumo do projeto para os comandos adaptadores.
+### Recursos dos nos
 
-## Exemplo Pratico
+- `TALOS_CONTROL_PLANE_CPU`
+- `TALOS_CONTROL_PLANE_MEMORY_MB`
+- `TALOS_CONTROL_PLANE_DISK_GB`
+- `TALOS_CONTROL_PLANE_EXTRA_DISK_GB`
+- `TALOS_WORKER_CPU`
+- `TALOS_WORKER_MEMORY_MB`
+- `TALOS_WORKER_DISK_GB`
+- `TALOS_WORKER_EXTRA_DISK_GB`
 
-Baseline em `vars.sh`:
+### Rede
+
+- `TALOS_GATEWAY`
+- `TALOS_NETMASK_PREFIX`
+- `TALOS_NODE_INTERFACE`
+- `TALOS_NAMESERVERS`
+- `TALOS_CONTROL_PLANE_VIP_ENABLED`
+- `TALOS_CONTROL_PLANE_VIP`
+
+### Caminhos de artefatos gerados
+
+- `TALOS_CONTROL_PLANE_CONFIG_PATH`
+- `TALOS_WORKER_CONFIG_PATH`
+
+Esses valores sao importantes porque o toolchain deriva os caminhos de
+`generated/` e `patches/` a partir do layout do projeto.
+
+## Variaveis de Post-Bootstrap Day-1
+
+Essas variaveis controlam a fase de baseline de addons executada por
+`apply-post-bootstrap`.
+
+- `TALOS_CLUSTER_BASELINE_ADDONS`
+- `TALOS_BASELINE_ADDONS`
+- `TALOS_DISABLE_DEFAULT_CNI`
+- `TALOS_POST_BOOTSTRAP_HELM_AUTO_PREPARE`
+- `TALOS_POST_BOOTSTRAP_HELM_SOURCE_MODE`
+- `TALOS_POST_BOOTSTRAP_HELM_SOURCE_PATH`
+- `TALOS_POST_BOOTSTRAP_HELM_SOURCE_URL`
+- `TALOS_POST_BOOTSTRAP_HELM_OVERWRITE`
+
+Comportamento esperado hoje:
+
+- o baseline de day-1 e orientado ao cluster
+- `cilium` normalmente faz parte do day-1
+- a fonte dos manifests pode vir de um caminho local ou de um arquivo baixado
+
+## Hooks de Integracao Externa
+
+Esses hooks existem para que o toolchain continue reutilizavel e nao embuta
+modulos de infraestrutura especificos do lab.
+
+### Hook de load balancer
+
+- `TALOS_LOAD_BALANCER_RECONCILE_SCRIPT`
+
+Se estiver definido, o `prepare-bootstrap` pode reconciliar frontend/backend da
+API do Talos por meio de um script externo.
+
+Se estiver vazio, a reconciliacao do load balancer e ignorada.
+
+### Hooks de DNS
+
+- `TALOS_DNS_SYNC_REQUIRED`
+- `TALOS_DNS_REGISTER_SCRIPT`
+- `TALOS_DNS_UNREGISTER_SCRIPT`
+
+Esses pontos de integracao sao opcionais para ambientes que desejam gerenciar
+registros DNS dos nos Talos durante provision/destroy.
+
+O comportamento padrao do toolchain reutilizavel deve continuar sendo:
+
+- `TALOS_DNS_SYNC_REQUIRED="false"`
+
+## Exemplo Pratico de Override
+
+Exemplo de `vars.local.sh`:
 
 ```bash
-export TALOS_DAY1_GENERATE_CMD="talosctl gen config ..."
-export TALOS_DAY1_PROVISION_CMD="./scripts/provision.sh"
-export TALOS_DAY1_PREPARE_BOOTSTRAP_CMD="./scripts/prepare-bootstrap.sh"
-export TALOS_DAY1_APPLY_CONFIG_CMD="./scripts/apply-config.sh"
-export TALOS_DAY1_BOOTSTRAP_CMD="talosctl bootstrap -n 192.168.0.61"
-export TALOS_DAY1_SYNC_ACCESS_CMD="./scripts/sync-access.sh"
-
-export TALOS_DAY1_MANIFEST_ROOT_DIR="/home/user/talos-vsphere-gitops"
-export TALOS_DAY1_KUBE_CONTEXT="talos-dev"
-export TALOS_CLUSTER_BASELINE_ADDONS='["cilium","longhorn"]'
-```
-
-Override local em `vars.local.sh`:
-
-```bash
-export TALOS_DAY1_KUBE_CONTEXT="talos-dev-admin"
-```
-
-## Variaveis De Conexao vSphere (quando usar mapeamentos baseados em govc)
-
-Se os comandos mapeados usarem scripts de provisionamento em vSphere, defina em
-`vars.local.sh`:
-
-```bash
-export VSPHERE_ENDPOINT="192.168.0.233"
-export VSPHERE_USERNAME="root"
 export VSPHERE_PASSWORD="CHANGE_ME"
-export VSPHERE_INSECURE_CONNECTION="true"
-export VSPHERE_DATASTORE="DATASTORE_02"
-export VSPHERE_NETWORK="VM Network"
-export VSPHERE_FOLDER=""
-export VSPHERE_RESOURCE_POOL=""
-export SSH_USER="vagrant"
-export HAPROXY_SSH_USER="vagrant"
+export TALOS_NAMESERVERS='["192.168.0.53"]'
+export TALOS_LOAD_BALANCER_RECONCILE_SCRIPT="/path/do/lab/load-balancer-hook.sh"
+export TALOS_DNS_SYNC_REQUIRED="true"
+export TALOS_DNS_REGISTER_SCRIPT="/path/do/lab/register-hosts.sh"
+export TALOS_DNS_UNREGISTER_SCRIPT="/path/do/lab/unregister-hosts.sh"
 ```
-
-Essas variaveis nao sao consumidas diretamente pelo `cluster.sh`. Elas sao
-consumidas pelos comandos referenciados em `TALOS_DAY1_*_CMD`.
 
 ## Ordem de Execucao (Referencia)
 
 1. `cluster.sh create-project --project-dir=...`
-2. Preencher `vars.sh` e opcionalmente `vars.local.sh`
-3. `cluster.sh refresh-schematics --project-dir=... --talos-version=vX.Y.Z`
-4. `cluster.sh generate --project-dir=...`
-5. `cluster.sh provision --project-dir=...`
-6. `cluster.sh prepare-bootstrap --project-dir=...`
-7. `cluster.sh bootstrap --project-dir=...`
-8. `cluster.sh apply-post-bootstrap --project-dir=...`
-9. `cluster.sh sync-access --project-dir=...`
+2. Preencher `vars.sh`
+3. Opcionalmente criar e preencher `vars.local.sh`
+4. `cluster.sh refresh-schematics --project-dir=... --talos-version=vX.Y.Z`
+5. `cluster.sh generate --project-dir=...`
+6. `cluster.sh provision --project-dir=...`
+7. `cluster.sh prepare-bootstrap --project-dir=...`
+8. `cluster.sh apply-config --project-dir=...`
+9. `cluster.sh bootstrap --project-dir=...`
+10. `cluster.sh apply-post-bootstrap --project-dir=...`
+11. `cluster.sh sync-access --project-dir=...`
