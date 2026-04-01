@@ -1,116 +1,159 @@
 #!/usr/bin/env bash
 # @file cluster.sh
-# @brief Day-1 Talos cluster lifecycle entrypoint.
+# @brief Unified day-1 Talos cluster lifecycle entrypoint.
 # @description
-#   Project-oriented day-1 CLI for Talos clusters. This toolchain entrypoint is
-#   environment-agnostic and executes day-1 actions from explicit project vars.
+#   Provides project-oriented actions for Talos day-1 flows:
+#   scaffold project files, generate machine configs, provision VMs,
+#   prepare and bootstrap control planes, apply post-bootstrap machine config,
+#   synchronize local access, and refresh Talos Factory schematics.
 #
-# @arg create-project action Create cluster project scaffold.
-# @arg refresh-schematics action Generate schematic IDs and update image vars.
-# @arg generate action Execute configured day-1 generate command.
-# @arg provision action Execute configured day-1 provision command.
-# @arg prepare-bootstrap action Execute configured day-1 prepare-bootstrap command.
-# @arg bootstrap action Execute configured day-1 bootstrap command.
-# @arg apply-config action Execute configured day-1 apply-config command.
-# @arg sync-access action Execute configured day-1 sync-access command.
-# @arg apply-post-bootstrap action Install mandatory day-1 baseline addons.
+# @arg create-project action Create project scaffold in --project-dir.
+# @arg generate action Generate Talos configs and rendered patches.
+# @arg provision action Provision Talos VMs.
+# @arg prepare-bootstrap action Prepare hosts for bootstrap pre-stage.
+# @arg apply-config action Apply machine configuration to nodes.
+# @arg bootstrap action Bootstrap Talos control plane.
+# @arg apply-post-bootstrap action Apply mandatory post-bootstrap baseline.
+# @arg sync-access action Sync local kubectl and talosctl access.
+# @arg refresh-schematics action Refresh schematic IDs and image vars.
 #
 # @arg --project-dir path Cluster project directory.
+# @arg --vars-file path Explicit vars file (advanced mode).
+# @arg --local-vars-file path Optional local override vars file.
 # @arg --cluster-name name Cluster name override.
-# @arg --talos-version version Talos version for image tags.
+# @arg --generated-dir path Generated directory override.
+# @arg --worker-count int Worker count override for provision.
+# @arg --addons list Addons list for apply-post-bootstrap.
+# @arg --talos-version version Talos version for schematic image tags.
 # @arg --cp-schematic-file path Control-plane schematic file path.
 # @arg --worker-schematic-file path Worker schematic file path.
-# @arg --addons list Baseline addon list override for apply-post-bootstrap.
-# @arg --manifest-root-dir path Manifest root dir override for apply-post-bootstrap.
-# @arg --kube-context name Kube context override for apply-post-bootstrap.
-# @flag --no-update-ova Do not rewrite TALOS_OVA_PATH during refresh.
+# @flag --force-generate Force regeneration of Talos config files.
+# @flag --no-update-ova Do not rewrite TALOS_OVA_PATH on refresh-schematics.
 # @flag --dry-run,-n Print actions without executing.
 # @flag --help,-h Show usage information.
+#
 # @example
-#   ./scripts/talos/cluster.sh create-project --project-dir=./clusters/talos-dev
+#   # Create project scaffold and initialize schematic image IDs
+#   ./cluster.sh create-project --project-dir=./clusters/talos-dev
+#
 # @example
-#   ./scripts/talos/cluster.sh generate --project-dir=./clusters/talos-dev
+#   # Run standard day-1 sequence for an existing project
+#   ./cluster.sh generate --project-dir=./clusters/talos-dev
+#   ./cluster.sh provision --project-dir=./clusters/talos-dev
+#   ./cluster.sh prepare-bootstrap --project-dir=./clusters/talos-dev
+#   ./cluster.sh bootstrap --project-dir=./clusters/talos-dev
+#   ./cluster.sh apply-config --project-dir=./clusters/talos-dev
 set -euo pipefail
 
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 # shellcheck disable=SC1091
-source "${SCRIPT_DIR}/lib/common.sh"
+source "${REPO_ROOT}/scripts/talos/lib/common.sh"
 
 ACTION=""
+VARS_FILE=""
+LOCAL_VARS_FILE=""
 PROJECT_DIR=""
 CLUSTER_NAME=""
+GENERATED_DIR=""
+WORKER_COUNT=""
+ADDONS_LIST=""
 TALOS_VERSION=""
 CP_SCHEMATIC_FILE=""
 WORKER_SCHEMATIC_FILE=""
-ADDONS_LIST=""
-MANIFEST_ROOT_DIR=""
-KUBE_CONTEXT=""
 UPDATE_OVA_FROM_SCHEMATIC="true"
+FORCE_GENERATE="false"
 DRY_RUN="false"
 
 usage() {
-  cat <<'EOF_USAGE'
-Usage: cluster.sh <action> [options]
+  cat <<EOF_USAGE
+Usage: $(basename "$0") <action> [options]
 
 Actions:
-  create-project        Create cluster project scaffold
-  refresh-schematics    Generate schematic IDs and refresh image vars in vars.sh
-  generate              Execute configured day-1 generate command
-  provision             Execute configured day-1 provision command
-  prepare-bootstrap     Execute configured day-1 prepare-bootstrap command
-  bootstrap             Execute configured day-1 bootstrap command
-  apply-config          Execute configured day-1 apply-config command
-  sync-access           Execute configured day-1 sync-access command
-  apply-post-bootstrap  Install mandatory day-1 baseline addons
+  create-project  Create a new cluster project scaffold in --project-dir and initialize Factory image IDs
+  generate        Generate Talos configs and rendered patches
+  provision       Provision Talos VMs (create)
+  prepare-bootstrap  Prepare hosts for bootstrap (discovers DHCP IPs in ISO mode and applies config)
+  apply-config    Apply machine configuration to nodes
+  bootstrap       Bootstrap Talos control plane
+  apply-post-bootstrap  Apply mandatory post-bootstrap baseline (for example cilium, longhorn)
+  sync-access     Sync local kubectl and talosctl access
+  refresh-schematics  Generate schematic IDs and refresh Talos image vars in project vars.sh
 
 Options:
-  --project-dir=<path>           Cluster project directory (required)
-  --cluster-name=<name>          Cluster name override
-  --talos-version=<version>      Talos version for image tags (example: v1.12.4)
-  --cp-schematic-file=<path>     CP schematic file path (default: <project>/schematic.cp.yaml)
-  --worker-schematic-file=<path> Worker schematic file path (default: <project>/schematic.worker.yaml, fallback schematic.yaml)
-  --addons=<list>                Baseline addon list override for apply-post-bootstrap
-  --manifest-root-dir=<path>     Manifest root dir override for apply-post-bootstrap
-  --kube-context=<name>          Kube context override for apply-post-bootstrap
-  --no-update-ova                Do not rewrite TALOS_OVA_PATH during refresh-schematics
-  -n, --dry-run                  Print actions without executing
-  -h, --help                     Show help
+  --vars-file=<path>              Explicit vars file (env-agnostic mode)
+  --bootstrap-vars-file=<path>    Alias of --vars-file
+  --local-vars-file=<path>        Optional local overrides file
+  --project-dir=<path>            Cluster project dir (loads vars.sh and vars.local.sh from there)
+  --cluster-name=<name>           Cluster name override
+  --generated-dir=<path>          Generated output dir override
+  --worker-count=<n>              Worker count override (provision only)
+  --addons=<list>                 Addon list for apply-post-bootstrap (CSV/JSON-like)
+  --talos-version=<version>       Talos version for image tags (example: v1.12.4)
+  --cp-schematic-file=<path>      CP schematic file (default: <project>/schematic.cp.yaml)
+  --worker-schematic-file=<path>  Worker schematic file (default: <project>/schematic.worker.yaml, fallback schematic.yaml)
+  --force-generate                Force regeneration of Talos config files
+  --no-update-ova                 Do not rewrite TALOS_OVA_PATH during refresh-schematics
+  -n, --dry-run                   Print actions without executing
+  -h, --help                      Show this help
 
 Examples:
-  # Create a new project scaffold
-  cluster.sh create-project --project-dir=./clusters/talos-dev
+  # Create project scaffold and initialize schematic image IDs
+  $(basename "$0") create-project --project-dir=./clusters/talos-dev
 
-  # Execute configured day-1 generate step
-  cluster.sh generate --project-dir=./clusters/talos-dev
+  # Generate Talos config artifacts for the project
+  $(basename "$0") generate --project-dir=./clusters/talos-dev
 
-  # Apply day-1 baseline addons (cilium required)
-  cluster.sh apply-post-bootstrap --project-dir=./clusters/talos-dev --addons='["cilium","longhorn"]'
+  # Provision project VMs on the configured virtualization backend
+  $(basename "$0") provision --project-dir=./clusters/talos-dev
+
+  # Prepare hosts for bootstrap pre-stage
+  $(basename "$0") prepare-bootstrap --project-dir=./clusters/talos-dev
+
+  # Re-apply machine configuration post-bootstrap
+  $(basename "$0") apply-config --project-dir=./clusters/talos-dev
+
+  # Bootstrap Talos control plane
+  $(basename "$0") bootstrap --project-dir=./clusters/talos-dev
+
+  # Apply mandatory post-bootstrap baseline addons
+  $(basename "$0") apply-post-bootstrap --project-dir=./clusters/talos-dev --addons='[\"cilium\",\"longhorn\"]'
+
+  # Sync local kubeconfig and talosconfig access
+  $(basename "$0") sync-access --project-dir=./clusters/talos-dev
+
+  # Refresh schematic IDs and image vars
+  $(basename "$0") refresh-schematics --project-dir=./clusters/talos-dev --talos-version=v1.12.4
 EOF_USAGE
 }
 
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      create-project|refresh-schematics|generate|provision|prepare-bootstrap|bootstrap|apply-config|sync-access|apply-post-bootstrap)
+      create-project|generate|provision|prepare-bootstrap|apply-config|bootstrap|apply-post-bootstrap|sync-access|refresh-schematics)
         [[ -z "${ACTION}" ]] || die "Action already set: ${ACTION}"
         ACTION="$1"
         shift
         ;;
+      --vars-file=*) VARS_FILE="${1#*=}"; shift ;;
+      --bootstrap-vars-file=*) VARS_FILE="${1#*=}"; shift ;;
+      --local-vars-file=*) LOCAL_VARS_FILE="${1#*=}"; shift ;;
       --project-dir=*) PROJECT_DIR="${1#*=}"; shift ;;
       --cluster-name=*) CLUSTER_NAME="${1#*=}"; shift ;;
+      --generated-dir=*) GENERATED_DIR="${1#*=}"; shift ;;
+      --worker-count=*) WORKER_COUNT="${1#*=}"; shift ;;
+      --addons=*) ADDONS_LIST="${1#*=}"; shift ;;
       --talos-version=*) TALOS_VERSION="${1#*=}"; shift ;;
       --cp-schematic-file=*) CP_SCHEMATIC_FILE="${1#*=}"; shift ;;
       --worker-schematic-file=*) WORKER_SCHEMATIC_FILE="${1#*=}"; shift ;;
-      --addons=*) ADDONS_LIST="${1#*=}"; shift ;;
-      --manifest-root-dir=*) MANIFEST_ROOT_DIR="${1#*=}"; shift ;;
-      --kube-context=*) KUBE_CONTEXT="${1#*=}"; shift ;;
+      --force-generate) FORCE_GENERATE="true"; shift ;;
       --no-update-ova) UPDATE_OVA_FROM_SCHEMATIC="false"; shift ;;
       -n|--dry-run) DRY_RUN="true"; shift ;;
       -h|--help) usage; exit 0 ;;
       --env=*|--env)
-        die "--env is not supported in talos-toolchain. Use --project-dir."
+        die "--env was removed. Use --project-dir or --vars-file."
         ;;
       *) usage; die "Unknown argument: $1" ;;
     esac
@@ -119,22 +162,30 @@ parse_args() {
   [[ -n "${ACTION}" ]] || { usage; die "Action is required."; }
 }
 
-resolve_abs_path() {
-  local path_value="$1"
-  if [[ "${path_value}" = /* ]]; then
-    printf '%s\n' "${path_value}"
-  else
-    printf '%s\n' "${PWD}/${path_value}"
+run_or_echo() {
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    log_info "[DRY-RUN] $*"
+    return 0
   fi
+  "$@"
 }
 
-run_or_echo_cmd() {
+run_or_echo_cmd_string() {
   local command="$1"
   if [[ "${DRY_RUN}" == "true" ]]; then
     log_info "[DRY-RUN] ${command}"
     return 0
   fi
   bash -lc "${command}"
+}
+
+resolve_abs_path() {
+  local path_value="$1"
+  if [[ "${path_value}" = /* ]]; then
+    printf '%s\n' "${path_value}"
+  else
+    printf '%s\n' "${REPO_ROOT}/${path_value}"
+  fi
 }
 
 detect_talos_version_from_vars() {
@@ -149,6 +200,38 @@ detect_talos_version_from_vars() {
   printf '%s\n' "${detected}"
 }
 
+read_export_var() {
+  local file="$1"
+  local key="$2"
+  awk -F'"' -v k="${key}" '$0 ~ "^export " k "=" { print $2; exit }' "${file}"
+}
+
+is_valid_vmware_installer_image() {
+  local image="$1"
+  [[ "${image}" =~ ^factory\.talos\.dev/vmware-installer/.+:[^:]+$ ]]
+}
+
+ensure_factory_installer_images_for_generate() {
+  local vars_file="$1"
+  local project_abs="$2"
+  local cp_image=""
+  local worker_image=""
+
+  [[ -f "${vars_file}" ]] || die "vars.sh not found: ${vars_file}"
+
+  cp_image="$(read_export_var "${vars_file}" "TALOS_CONTROL_PLANE_INSTALLER_IMAGE" || true)"
+  worker_image="$(read_export_var "${vars_file}" "TALOS_WORKER_INSTALLER_IMAGE" || true)"
+
+  if is_valid_vmware_installer_image "${cp_image}" && is_valid_vmware_installer_image "${worker_image}"; then
+    return 0
+  fi
+
+  [[ -n "${project_abs}" ]] || die "Missing --project-dir. Cannot auto-refresh schematics without project context."
+  log_warn "Factory vmware-installer images are missing/invalid in vars.sh."
+  log_info "Auto-refreshing schematics before generate."
+  refresh_schematics "${vars_file}" "${project_abs}"
+}
+
 post_schematic_and_get_id() {
   local schematic_file="$1"
   local response=""
@@ -158,7 +241,7 @@ post_schematic_and_get_id() {
   command -v curl >/dev/null 2>&1 || die "curl is required for refresh-schematics."
 
   if [[ "${DRY_RUN}" == "true" ]]; then
-    printf '[INFO] [DRY-RUN] POST schematic: %s -> https://factory.talos.dev/schematics\n' "${schematic_file}" >&2
+    log_info "[DRY-RUN] POST schematic: ${schematic_file} -> https://factory.talos.dev/schematics"
     printf '%s\n' "dryrun-schematic-id"
     return 0
   fi
@@ -190,7 +273,9 @@ upsert_export_var() {
       }
       { print }
       END {
-        if (!done) print "export " k "=\"" v "\""
+        if (!done) {
+          print "export " k "=\"" v "\""
+        }
       }
     ' "${file}" > "${tmp_file}"
   else
@@ -201,51 +286,90 @@ upsert_export_var() {
   mv "${tmp_file}" "${file}"
 }
 
-normalize_csv_list() {
-  local raw="$1"
-  raw="${raw//[/}"
-  raw="${raw//]/}"
-  raw="${raw//\"/}"
-  raw="${raw// /}"
-  printf '%s\n' "${raw}"
-}
+refresh_schematics() {
+  local vars_file="$1"
+  local project_abs="$2"
+  local cp_file=""
+  local worker_file=""
+  local cp_id=""
+  local worker_id=""
+  local version=""
+  local cp_image=""
+  local worker_image=""
+  local ova_url=""
 
-csv_to_array() {
-  local csv="$1"
-  [[ -n "${csv}" ]] || return 0
-  local IFS=','
-  local -a arr=()
-  read -r -a arr <<<"${csv}"
-  printf '%s\n' "${arr[@]}"
-}
+  [[ -n "${project_abs}" ]] || die "--project-dir is required for refresh-schematics."
+  [[ -f "${vars_file}" ]] || die "vars.sh not found: ${vars_file}"
 
-in_array() {
-  local needle="$1"
-  shift
-  local item=""
-  for item in "$@"; do
-    [[ "${item}" == "${needle}" ]] && return 0
-  done
-  return 1
-}
-
-load_project_vars() {
-  local project_abs="$1"
-  local vars_file="${project_abs}/vars.sh"
-  local local_vars_file="${project_abs}/vars.local.sh"
-
-  require_file "${vars_file}"
-  # shellcheck disable=SC1090
-  source "${vars_file}"
-  if [[ -f "${local_vars_file}" ]]; then
-    # shellcheck disable=SC1090
-    source "${local_vars_file}"
+  if [[ -n "${CP_SCHEMATIC_FILE}" ]]; then
+    cp_file="$(resolve_abs_path "${CP_SCHEMATIC_FILE}")"
+  else
+    cp_file="${project_abs}/schematic.cp.yaml"
   fi
+
+  if [[ -n "${WORKER_SCHEMATIC_FILE}" ]]; then
+    worker_file="$(resolve_abs_path "${WORKER_SCHEMATIC_FILE}")"
+  else
+    worker_file="${project_abs}/schematic.worker.yaml"
+  fi
+
+  if [[ ! -f "${worker_file}" && -f "${project_abs}/schematic.yaml" ]]; then
+    worker_file="${project_abs}/schematic.yaml"
+  fi
+
+  if [[ ! -f "${cp_file}" ]]; then
+    if [[ -f "${project_abs}/schematic.yaml" ]]; then
+      cp_file="${project_abs}/schematic.yaml"
+    else
+      cp_file="${worker_file}"
+    fi
+    log_warn "CP schematic not found; using fallback: ${cp_file}"
+  fi
+
+  [[ -f "${worker_file}" ]] || die "Worker schematic not found: ${worker_file}"
+  [[ -f "${cp_file}" ]] || die "CP schematic not found: ${cp_file}"
+
+  version="${TALOS_VERSION}"
+  if [[ -z "${version}" ]]; then
+    version="$(detect_talos_version_from_vars "${vars_file}")"
+  fi
+  [[ -n "${version}" ]] || die "Talos version not set. Use --talos-version (example: v1.12.4)."
+
+  cp_id="$(post_schematic_and_get_id "${cp_file}")"
+  worker_id="$(post_schematic_and_get_id "${worker_file}")"
+
+  cp_image="factory.talos.dev/vmware-installer/${cp_id}:${version}"
+  worker_image="factory.talos.dev/vmware-installer/${worker_id}:${version}"
+  ova_url="https://factory.talos.dev/image/${worker_id}/${version}/vmware-amd64.ova"
+
+  log_info "Resolved schematic IDs: cp=${cp_id} worker=${worker_id}"
+  log_info "Control-plane installer image: ${cp_image}"
+  log_info "Worker installer image: ${worker_image}"
+  [[ "${UPDATE_OVA_FROM_SCHEMATIC}" == "true" ]] && log_info "OVA URL: ${ova_url}"
+
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    log_info "[DRY-RUN] Would update ${vars_file}"
+    return 0
+  fi
+
+  upsert_export_var "${vars_file}" "TALOS_CONTROL_PLANE_INSTALLER_IMAGE" "${cp_image}"
+  upsert_export_var "${vars_file}" "TALOS_WORKER_INSTALLER_IMAGE" "${worker_image}"
+  [[ "${UPDATE_OVA_FROM_SCHEMATIC}" == "true" ]] && upsert_export_var "${vars_file}" "TALOS_OVA_PATH" "${ova_url}"
+
+  log_info "Updated image vars in: ${vars_file}"
 }
 
 create_project_scaffold() {
-  local project_abs="$1"
+  local project_dir="$1"
   local cluster_name="$2"
+  local base_vars_path="${REPO_ROOT}/scripts/talos/vars.sh"
+  local project_abs=""
+
+  if [[ "${project_dir}" = /* ]]; then
+    project_abs="${project_dir}"
+  else
+    project_abs="${REPO_ROOT}/${project_dir}"
+  fi
 
   if [[ "${DRY_RUN}" == "true" ]]; then
     log_info "[DRY-RUN] create project scaffold at ${project_abs}"
@@ -348,19 +472,54 @@ EOF_SCHEMATIC_WORKER
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Generated by talos-toolchain cluster.sh create-project
+# Generated by cluster.sh create-project
+BASE_VARS="${base_vars_path}"
 PROJECT_DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
 
+if [[ ! -f "\${BASE_VARS}" ]]; then
+  echo "[ERROR] Missing base vars file: \${BASE_VARS}" >&2
+  return 1 2>/dev/null || exit 1
+fi
+
+# shellcheck source=/dev/null
+source "\${BASE_VARS}"
+
 export TALOS_CLUSTER_NAME="${cluster_name}"
-export TALOS_CLUSTER_ENDPOINT="https://192.168.0.30:6443"
 
-# Network defaults
-export TALOS_GATEWAY="192.168.0.2"
-export TALOS_NETMASK_PREFIX="24"
-export TALOS_NODE_INTERFACE="eth0"
-export TALOS_NAMESERVERS='["1.1.1.1","8.8.8.8"]'
+# vSphere target (required for provision)
+export VSPHERE_ENDPOINT="192.168.0.233"
+export VSPHERE_USERNAME="root"
+export VSPHERE_PASSWORD="CHANGE_ME"
+export VSPHERE_INSECURE_CONNECTION="true"
+export VSPHERE_DATASTORE="DATASTORE_02"
+export VSPHERE_NETWORK="VM Network"
+export VSPHERE_FOLDER=""
+export VSPHERE_RESOURCE_POOL=""
 
-# Topology defaults
+# SSH user defaults (controller -> helper VMs such as HAProxy/DNS)
+export BUILD_USERNAME="vagrant"
+export SSH_USER="vagrant"
+export ANSIBLE_USER="\${ANSIBLE_USER:-\${SSH_USER}}"
+export ANSIBLE_USERNAME="\${ANSIBLE_USERNAME:-\${SSH_USER}}"
+export SSH_PORT="22"
+export HAPROXY_SSH_USER="\${HAPROXY_SSH_USER:-\${SSH_USER}}"
+
+# Talos access endpoint
+export HAPROXY_VIP="192.168.0.30"
+export HAPROXY_NODE_1_NAME="talos-lb-1"
+export HAPROXY_NODE_1_IP="192.168.0.31"
+export HAPROXY_NODE_2_NAME="talos-lb-2"
+export HAPROXY_NODE_2_IP="192.168.0.32"
+export TALOS_LOAD_BALANCER_RECONCILE_SCRIPT=""
+export TALOS_CLUSTER_ENDPOINT="https://\${HAPROXY_VIP}:6443"
+
+# Talos image source (choose one primary strategy)
+export TALOS_OVA_PATH="https://factory.talos.dev/image/<schematic-id>/v1.12.4/vmware-amd64.ova"
+export TALOS_ISO_DATASTORE_PATH="ISOs/talos-v1.12.4-uefi.iso"
+# Optional local ISO used for automatic datastore upload in ISO mode
+export TALOS_ISO_LOCAL_PATH=""
+
+# Cluster topology
 export TALOS_CONTROL_PLANE_COUNT="3"
 export TALOS_WORKER_COUNT="3"
 export TALOS_CONTROL_PLANE_IPS='["192.168.0.61","192.168.0.62","192.168.0.63"]'
@@ -368,24 +527,42 @@ export TALOS_WORKER_IPS='["192.168.0.71","192.168.0.72","192.168.0.73"]'
 export TALOS_CONTROL_PLANE_NAME_PREFIX="\${TALOS_CLUSTER_NAME}-cp"
 export TALOS_WORKER_NAME_PREFIX="\${TALOS_CLUSTER_NAME}-worker"
 
-# Images (refresh-schematics will set installer image IDs)
-export TALOS_OVA_PATH="https://factory.talos.dev/image/<schematic-id>/v1.12.4/vmware-amd64.ova"
-export TALOS_CONTROL_PLANE_INSTALLER_IMAGE=""
-export TALOS_WORKER_INSTALLER_IMAGE=""
+# Node resources
+export TALOS_CONTROL_PLANE_CPU="2"
+export TALOS_CONTROL_PLANE_MEMORY_MB="4096"
+export TALOS_CONTROL_PLANE_DISK_GB="20"
+export TALOS_CONTROL_PLANE_EXTRA_DISK_GB="40"
+export TALOS_WORKER_CPU="2"
+export TALOS_WORKER_MEMORY_MB="4096"
+export TALOS_WORKER_DISK_GB="40"
+export TALOS_WORKER_EXTRA_DISK_GB="40"
 
-# Day-1 action commands (must be set by your environment integration)
-export TALOS_DAY1_GENERATE_CMD=""
-export TALOS_DAY1_PROVISION_CMD=""
-export TALOS_DAY1_PREPARE_BOOTSTRAP_CMD=""
-export TALOS_DAY1_APPLY_CONFIG_CMD=""
-export TALOS_DAY1_BOOTSTRAP_CMD=""
-export TALOS_DAY1_SYNC_ACCESS_CMD=""
+# Networking
+export TALOS_GATEWAY="192.168.0.2"
+export TALOS_NETMASK_PREFIX="24"
+export TALOS_NODE_INTERFACE="eth0"
+# Keep false when using external LB (HAProxy/keepalived VIP).
+# Enable only if you intentionally run Talos CP interface VIP with a distinct IP.
+export TALOS_CONTROL_PLANE_VIP_ENABLED="false"
+export TALOS_CONTROL_PLANE_VIP="\${HAPROXY_VIP}"
+export TALOS_NAMESERVERS='["1.1.1.1","8.8.8.8"]'
 
-# Day-1 baseline addons
+# CNI baseline
+export TALOS_DISABLE_DEFAULT_CNI="true"
 export TALOS_CLUSTER_BASELINE_ADDONS='["cilium"]'
-export TALOS_DAY1_REQUIRE_CILIUM="true"
-export TALOS_DAY1_MANIFEST_ROOT_DIR=""
-export TALOS_DAY1_KUBE_CONTEXT=""
+export TALOS_POST_BOOTSTRAP_HELM_AUTO_PREPARE="true"
+export TALOS_POST_BOOTSTRAP_HELM_SOURCE_MODE="path"
+export TALOS_POST_BOOTSTRAP_HELM_SOURCE_PATH="/home/vagrant/talos-vsphere-gitops/environments/lab/helm"
+export TALOS_POST_BOOTSTRAP_HELM_SOURCE_URL=""
+export TALOS_POST_BOOTSTRAP_HELM_OVERWRITE="true"
+export TALOS_DNS_SYNC_REQUIRED="false"
+export TALOS_DNS_REGISTER_SCRIPT=""
+export TALOS_DNS_UNREGISTER_SCRIPT=""
+
+# Generated artifacts and machine configs
+export TALOS_CONTROL_PLANE_CONFIG_PATH="\${PROJECT_DIR}/generated/controlplane.yaml"
+export TALOS_WORKER_CONFIG_PATH="\${PROJECT_DIR}/generated/worker.yaml"
+
 EOF_VARS
     chmod +x "${project_abs}/vars.sh"
   fi
@@ -393,40 +570,13 @@ EOF_VARS
   if [[ ! -f "${project_abs}/vars.local.example.sh" ]]; then
     cat > "${project_abs}/vars.local.example.sh" <<'EOF_LOCAL'
 #!/usr/bin/env bash
-# Copy to vars.local.sh and customize local/sensitive values.
-set -euo pipefail
+# Copy to vars.local.sh and customize sensitive values.
 
-# Day-1 command mapping overrides (optional; defaults come from vars.sh)
-# export TALOS_DAY1_GENERATE_CMD="..."
-# export TALOS_DAY1_PROVISION_CMD="..."
-# export TALOS_DAY1_PREPARE_BOOTSTRAP_CMD="..."
-# export TALOS_DAY1_APPLY_CONFIG_CMD="..."
-# export TALOS_DAY1_BOOTSTRAP_CMD="..."
-# export TALOS_DAY1_SYNC_ACCESS_CMD="..."
-
-# Day-1 post-bootstrap baseline overrides
-# export TALOS_DAY1_MANIFEST_ROOT_DIR="/home/vagrant/talos-vsphere-gitops/environments/lab"
-# export TALOS_DAY1_KUBE_CONTEXT="admin@talos-dev"
-# export TALOS_CLUSTER_BASELINE_ADDONS='["cilium","longhorn"]'
-# export TALOS_DAY1_REQUIRE_CILIUM="true"
-
-# Environment integration example (vSphere/govc-backed commands)
-# export VSPHERE_ENDPOINT="192.168.0.233"
-# export VSPHERE_USERNAME="root"
-# export VSPHERE_PASSWORD="CHANGE_ME"
-# export VSPHERE_INSECURE_CONNECTION="true"
-# export VSPHERE_DATASTORE="DATASTORE_02"
-# export VSPHERE_NETWORK="VM Network"
-# export VSPHERE_FOLDER=""
-# export VSPHERE_RESOURCE_POOL=""
-# export SSH_USER="vagrant"
-# export HAPROXY_SSH_USER="vagrant"
-
-# Optional topology/network local overrides
-# export TALOS_CLUSTER_ENDPOINT="https://192.168.0.30:6443"
-# export TALOS_CONTROL_PLANE_IPS='["192.168.0.61","192.168.0.62","192.168.0.63"]'
-# export TALOS_WORKER_IPS='["192.168.0.71","192.168.0.72","192.168.0.73"]'
-# export TALOS_NAMESERVERS='["192.168.0.53","1.1.1.1","8.8.8.8"]'
+export VSPHERE_ENDPOINT="192.168.0.233"
+export VSPHERE_USERNAME="root"
+export VSPHERE_PASSWORD="CHANGE_ME"
+export SSH_USER="vagrant"
+export HAPROXY_SSH_USER="vagrant"
 EOF_LOCAL
   fi
 
@@ -473,27 +623,26 @@ This project was generated by:
 cluster.sh create-project --project-dir=${project_abs}
 \`\`\`
 
-## Required Configuration
+## Quick Flow
 
-1. Fill \`vars.sh\` and optionally \`vars.local.sh\`.
-2. Set required day-1 command adapters:
-   - \`TALOS_DAY1_GENERATE_CMD\`
-   - \`TALOS_DAY1_PROVISION_CMD\`
-   - \`TALOS_DAY1_PREPARE_BOOTSTRAP_CMD\`
-   - \`TALOS_DAY1_APPLY_CONFIG_CMD\`
-   - \`TALOS_DAY1_BOOTSTRAP_CMD\`
-   - \`TALOS_DAY1_SYNC_ACCESS_CMD\`
-3. Set post-bootstrap baseline inputs:
-   - \`TALOS_DAY1_MANIFEST_ROOT_DIR\`
-   - \`TALOS_DAY1_KUBE_CONTEXT\`
-   - \`TALOS_CLUSTER_BASELINE_ADDONS\`
-4. See variable reference in talos-toolchain repository:
-   - \`docs/en/day1-project-vars.md\`
-   - \`docs/pt-br/day1-project-vars.md\`
-5. Refresh schematics:
+1. Fill values in \`vars.sh\`.
+2. Optionally create \`vars.local.sh\` from \`vars.local.example.sh\`.
+3. (Optional) Refresh Talos images from schematics if you changed schematic files:
 
 \`\`\`bash
 cluster.sh refresh-schematics --project-dir=${project_abs} --talos-version=v1.12.4
+\`\`\`
+
+4. Execute:
+
+\`\`\`bash
+cluster.sh generate --project-dir=${project_abs}
+cluster.sh provision --project-dir=${project_abs}
+cluster.sh prepare-bootstrap --project-dir=${project_abs}
+cluster.sh apply-config --project-dir=${project_abs}
+cluster.sh bootstrap --project-dir=${project_abs}
+cluster.sh sync-access --project-dir=${project_abs}
+cluster.sh apply-post-bootstrap --project-dir=${project_abs}
 \`\`\`
 EOF_README
   fi
@@ -501,166 +650,120 @@ EOF_README
   log_info "Project scaffold created: ${project_abs}"
 }
 
-refresh_schematics() {
-  local project_abs="$1"
-  local vars_file="${project_abs}/vars.sh"
-  local cp_file=""
-  local worker_file=""
-  local cp_id=""
-  local worker_id=""
-  local version=""
-  local cp_image=""
-  local worker_image=""
-  local ova_url=""
-
-  [[ -f "${vars_file}" ]] || die "vars.sh not found: ${vars_file}"
-
-  if [[ -n "${CP_SCHEMATIC_FILE}" ]]; then
-    cp_file="$(resolve_abs_path "${CP_SCHEMATIC_FILE}")"
-  else
-    cp_file="${project_abs}/schematic.cp.yaml"
-  fi
-
-  if [[ -n "${WORKER_SCHEMATIC_FILE}" ]]; then
-    worker_file="$(resolve_abs_path "${WORKER_SCHEMATIC_FILE}")"
-  else
-    worker_file="${project_abs}/schematic.worker.yaml"
-  fi
-
-  if [[ ! -f "${worker_file}" && -f "${project_abs}/schematic.yaml" ]]; then
-    worker_file="${project_abs}/schematic.yaml"
-  fi
-
-  if [[ ! -f "${cp_file}" ]]; then
-    if [[ -f "${project_abs}/schematic.yaml" ]]; then
-      cp_file="${project_abs}/schematic.yaml"
-    else
-      cp_file="${worker_file}"
-    fi
-    log_warn "CP schematic not found; using fallback: ${cp_file}"
-  fi
-
-  [[ -f "${worker_file}" ]] || die "Worker schematic not found: ${worker_file}"
-  [[ -f "${cp_file}" ]] || die "CP schematic not found: ${cp_file}"
-
-  version="${TALOS_VERSION}"
-  if [[ -z "${version}" ]]; then
-    version="$(detect_talos_version_from_vars "${vars_file}")"
-  fi
-  [[ -n "${version}" ]] || die "Talos version not set. Use --talos-version (example: v1.12.4)."
-
-  cp_id="$(post_schematic_and_get_id "${cp_file}")"
-  worker_id="$(post_schematic_and_get_id "${worker_file}")"
-
-  cp_image="factory.talos.dev/vmware-installer/${cp_id}:${version}"
-  worker_image="factory.talos.dev/vmware-installer/${worker_id}:${version}"
-  ova_url="https://factory.talos.dev/image/${worker_id}/${version}/vmware-amd64.ova"
-
-  log_info "Resolved schematic IDs: cp=${cp_id} worker=${worker_id}"
-  log_info "Control-plane installer image: ${cp_image}"
-  log_info "Worker installer image: ${worker_image}"
-  [[ "${UPDATE_OVA_FROM_SCHEMATIC}" == "true" ]] && log_info "OVA URL: ${ova_url}"
-
-  if [[ "${DRY_RUN}" == "true" ]]; then
-    log_info "[DRY-RUN] Would update ${vars_file}"
-    return 0
-  fi
-
-  upsert_export_var "${vars_file}" "TALOS_CONTROL_PLANE_INSTALLER_IMAGE" "${cp_image}"
-  upsert_export_var "${vars_file}" "TALOS_WORKER_INSTALLER_IMAGE" "${worker_image}"
-  [[ "${UPDATE_OVA_FROM_SCHEMATIC}" == "true" ]] && upsert_export_var "${vars_file}" "TALOS_OVA_PATH" "${ova_url}"
-
-  log_info "Updated image vars in: ${vars_file}"
-}
-
-resolve_action_command_var() {
-  local action="$1"
-  case "${action}" in
-    generate) printf '%s|%s\n' "TALOS_DAY1_GENERATE_CMD" "${TALOS_DAY1_GENERATE_CMD:-}" ;;
-    provision) printf '%s|%s\n' "TALOS_DAY1_PROVISION_CMD" "${TALOS_DAY1_PROVISION_CMD:-}" ;;
-    prepare-bootstrap) printf '%s|%s\n' "TALOS_DAY1_PREPARE_BOOTSTRAP_CMD" "${TALOS_DAY1_PREPARE_BOOTSTRAP_CMD:-}" ;;
-    apply-config) printf '%s|%s\n' "TALOS_DAY1_APPLY_CONFIG_CMD" "${TALOS_DAY1_APPLY_CONFIG_CMD:-}" ;;
-    bootstrap) printf '%s|%s\n' "TALOS_DAY1_BOOTSTRAP_CMD" "${TALOS_DAY1_BOOTSTRAP_CMD:-}" ;;
-    sync-access) printf '%s|%s\n' "TALOS_DAY1_SYNC_ACCESS_CMD" "${TALOS_DAY1_SYNC_ACCESS_CMD:-}" ;;
-    *) die "Unsupported mapped action: ${action}" ;;
-  esac
-}
-
-run_mapped_day1_action() {
-  local action="$1"
-  local mapping=""
-  local var_name=""
-  local command=""
-  mapping="$(resolve_action_command_var "${action}")"
-  var_name="${mapping%%|*}"
-  command="${mapping#*|}"
-  [[ -n "${command}" ]] || die "Missing command mapping for '${action}'. Set ${var_name} in project vars."
-  run_or_echo_cmd "${command}"
-}
-
-apply_post_bootstrap() {
-  local project_abs="$1"
-  local manifest_root=""
-  local kube_ctx=""
-  local require_cilium=""
-  local raw_addons=""
-  local addons_csv=""
-  local addon=""
-  local -a addons=()
-
-  manifest_root="${MANIFEST_ROOT_DIR:-${TALOS_DAY1_MANIFEST_ROOT_DIR:-}}"
-  kube_ctx="${KUBE_CONTEXT:-${TALOS_DAY1_KUBE_CONTEXT:-}}"
-  require_cilium="${TALOS_DAY1_REQUIRE_CILIUM:-true}"
-  raw_addons="${ADDONS_LIST:-${TALOS_CLUSTER_BASELINE_ADDONS:-[\"cilium\"]}}"
-
-  [[ -n "${manifest_root}" ]] || die "Missing manifest root. Set --manifest-root-dir or TALOS_DAY1_MANIFEST_ROOT_DIR."
-  [[ -n "${kube_ctx}" ]] || die "Missing kube context. Set --kube-context or TALOS_DAY1_KUBE_CONTEXT."
-
-  addons_csv="$(normalize_csv_list "${raw_addons}")"
-  mapfile -t addons < <(csv_to_array "${addons_csv}")
-  (( ${#addons[@]} > 0 )) || die "No addons resolved for apply-post-bootstrap."
-
-  if [[ "${require_cilium}" == "true" ]] && ! in_array "cilium" "${addons[@]}"; then
-    die "Cilium is mandatory for day-1 baseline. Include 'cilium' in addons."
-  fi
-
-  # Force deterministic ordering: cilium first, then remaining in provided order.
-  if in_array "cilium" "${addons[@]}"; then
-    run_or_echo_cmd "${SCRIPT_DIR}/talos-gitops.sh install-addon --allow-system-addon --addon=cilium --kube-context=${kube_ctx} --manifest-root-dir=${manifest_root}"
-  fi
-  for addon in "${addons[@]}"; do
-    [[ "${addon}" == "cilium" ]] && continue
-    run_or_echo_cmd "${SCRIPT_DIR}/talos-gitops.sh install-addon --addon=${addon} --kube-context=${kube_ctx} --manifest-root-dir=${manifest_root}"
-  done
-
-  log_info "Day-1 post-bootstrap baseline completed."
-}
-
 main() {
+  local -a cmd=()
+  local project_vars_file=""
+  local project_local_vars_file=""
   local project_abs=""
   local project_name=""
 
   parse_args "$@"
-  [[ -n "${PROJECT_DIR}" ]] || die "--project-dir is required."
-  project_abs="$(resolve_abs_path "${PROJECT_DIR}")"
-  project_name="${CLUSTER_NAME:-$(basename "${project_abs}")}"
+
+  if [[ -n "${PROJECT_DIR}" ]]; then
+    if [[ "${PROJECT_DIR}" = /* ]]; then
+      project_abs="${PROJECT_DIR}"
+    else
+      project_abs="${REPO_ROOT}/${PROJECT_DIR}"
+    fi
+
+    project_vars_file="${project_abs}/vars.sh"
+    project_local_vars_file="${project_abs}/vars.local.sh"
+    [[ -z "${VARS_FILE}" ]] && VARS_FILE="${project_vars_file}"
+    [[ -z "${LOCAL_VARS_FILE}" ]] && LOCAL_VARS_FILE="${project_local_vars_file}"
+    [[ -z "${CLUSTER_NAME}" ]] && CLUSTER_NAME="$(basename "${project_abs}")"
+    [[ -z "${GENERATED_DIR}" ]] && GENERATED_DIR="${project_abs}/generated"
+  fi
+
+  if [[ "${ACTION}" != "create-project" && -z "${VARS_FILE}" ]]; then
+    die "Missing vars source. Use --project-dir=<path> or --vars-file=<path>."
+  fi
+
+  if [[ -n "${VARS_FILE}" ]]; then
+    export OVERLAY_VARS_FILE="${VARS_FILE}"
+  fi
+  if [[ -n "${LOCAL_VARS_FILE}" ]]; then
+    export OVERLAY_LOCAL_VARS_FILE="${LOCAL_VARS_FILE}"
+  fi
+
+  if [[ "${ACTION}" != "create-project" ]]; then
+    [[ -f "${VARS_FILE}" ]] || die "Vars file not found: ${VARS_FILE}"
+    # shellcheck disable=SC1090
+    source "${VARS_FILE}"
+    if [[ -n "${LOCAL_VARS_FILE}" && -f "${LOCAL_VARS_FILE}" ]]; then
+      # shellcheck disable=SC1090
+      source "${LOCAL_VARS_FILE}"
+    fi
+  fi
 
   case "${ACTION}" in
     create-project)
-      create_project_scaffold "${project_abs}" "${project_name}"
+      [[ -n "${PROJECT_DIR}" ]] || die "--project-dir is required for create-project."
+      project_name="${CLUSTER_NAME:-$(basename "${project_abs}")}"
+      create_project_scaffold "${PROJECT_DIR}" "${project_name}"
+      if [[ "${DRY_RUN}" == "true" ]]; then
+        log_info "[DRY-RUN] Would initialize Factory image IDs via refresh-schematics."
+      else
+        # Initialize project with concrete Factory IDs (cp + worker) and OVA URL.
+        VARS_FILE="${project_abs}/vars.sh"
+        [[ -f "${VARS_FILE}" ]] || die "Expected vars.sh after create-project: ${VARS_FILE}"
+        refresh_schematics "${VARS_FILE}" "${project_abs}"
+      fi
+      return 0
       ;;
     refresh-schematics)
-      refresh_schematics "${project_abs}"
+      refresh_schematics "${VARS_FILE}" "${project_abs}"
+      return 0
       ;;
-    generate|provision|prepare-bootstrap|bootstrap|apply-config|sync-access)
-      load_project_vars "${project_abs}"
-      run_mapped_day1_action "${ACTION}"
+    generate)
+      cmd=("${SCRIPT_DIR}/cluster-bootstrap.sh" "--env=lab" "--mode=generate")
+      [[ -n "${CLUSTER_NAME}" ]] && cmd+=("--cluster-name=${CLUSTER_NAME}")
+      [[ -n "${GENERATED_DIR}" ]] && cmd+=("--generated-dir=${GENERATED_DIR}")
+      [[ "${FORCE_GENERATE}" == "true" ]] && cmd+=("--force-generate")
+      [[ "${DRY_RUN}" == "true" ]] && cmd+=("--dry-run")
+      ;;
+    provision)
+      cmd=("${SCRIPT_DIR}/provision-cluster.sh" "--env=lab" "create")
+      [[ -n "${WORKER_COUNT}" ]] && cmd+=("--worker-count=${WORKER_COUNT}")
+      [[ "${DRY_RUN}" == "true" ]] && cmd+=("--dry-run")
+      ;;
+    prepare-bootstrap)
+      cmd=("${SCRIPT_DIR}/cluster-bootstrap.sh" "--env=lab" "--mode=apply" "--apply-stage=pre")
+      [[ -n "${CLUSTER_NAME}" ]] && cmd+=("--cluster-name=${CLUSTER_NAME}")
+      [[ -n "${GENERATED_DIR}" ]] && cmd+=("--generated-dir=${GENERATED_DIR}")
+      [[ "${DRY_RUN}" == "true" ]] && cmd+=("--dry-run")
+      ;;
+    apply-config)
+      cmd=("${SCRIPT_DIR}/cluster-bootstrap.sh" "--env=lab" "--mode=apply")
+      [[ -n "${CLUSTER_NAME}" ]] && cmd+=("--cluster-name=${CLUSTER_NAME}")
+      [[ -n "${GENERATED_DIR}" ]] && cmd+=("--generated-dir=${GENERATED_DIR}")
+      [[ "${DRY_RUN}" == "true" ]] && cmd+=("--dry-run")
+      ;;
+    bootstrap)
+      cmd=("${SCRIPT_DIR}/cluster-bootstrap.sh" "--env=lab" "--mode=bootstrap")
+      [[ -n "${CLUSTER_NAME}" ]] && cmd+=("--cluster-name=${CLUSTER_NAME}")
+      [[ -n "${GENERATED_DIR}" ]] && cmd+=("--generated-dir=${GENERATED_DIR}")
+      [[ "${DRY_RUN}" == "true" ]] && cmd+=("--dry-run")
+      ;;
+    sync-access)
+      [[ -n "${project_abs}" ]] || die "--project-dir is required for sync-access."
+      cmd=("${SCRIPT_DIR}/sync-kubectl.sh" "--env=lab" "--source=${project_abs}/generated/kubeconfig")
+      [[ -n "${CLUSTER_NAME}" ]] && cmd+=("--cluster-name=${CLUSTER_NAME}")
+      [[ "${DRY_RUN}" == "true" ]] && cmd+=("--dry-run")
+      run_or_echo "${cmd[@]}"
+      cmd=("${SCRIPT_DIR}/sync-talosctl.sh" "--env=lab" "--source=${project_abs}/generated/talosconfig")
+      [[ -n "${CLUSTER_NAME}" ]] && cmd+=("--cluster-name=${CLUSTER_NAME}")
+      [[ "${DRY_RUN}" == "true" ]] && cmd+=("--dry-run")
       ;;
     apply-post-bootstrap)
-      load_project_vars "${project_abs}"
-      apply_post_bootstrap "${project_abs}"
+      [[ -n "${PROJECT_DIR}" ]] || die "--project-dir is required for apply-post-bootstrap."
+      cmd=("${SCRIPT_DIR}/apply-post-bootstrap.sh" "--project-dir=${project_abs}")
+      [[ -n "${CLUSTER_NAME}" ]] && cmd+=("--cluster-name=${CLUSTER_NAME}")
+      [[ -n "${ADDONS_LIST}" ]] && cmd+=("--addons=${ADDONS_LIST}")
+      [[ "${DRY_RUN}" == "true" ]] && cmd+=("--dry-run")
       ;;
   esac
+
+  run_or_echo "${cmd[@]}"
 }
 
 main "$@"
