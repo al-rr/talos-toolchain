@@ -80,8 +80,8 @@ export COMMUNICATOR_PROXY_USERNAME=""
 export COMMUNICATOR_PROXY_PASSWORD=""
 
 # GOVC lifecycle variables (generic VM provisioning)
-GOVC_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/govc" >/dev/null 2>&1 && pwd)"
-if [[ -f "${GOVC_SCRIPT_DIR}/vars.sh" ]]; then
+GOVC_SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")/govc"
+if [[ -d "${GOVC_SCRIPT_DIR}" && -f "${GOVC_SCRIPT_DIR}/vars.sh" ]]; then
   # shellcheck disable=SC1090
   source "${GOVC_SCRIPT_DIR}/vars.sh"
 fi
@@ -101,16 +101,16 @@ export HAPROXY_ANSIBLE_PLAYBOOK="${BASE_HAPROXY_ANSIBLE_DIR}/playbooks/provision
 export HAPROXY_TERRAFORM_DIR="${BASE_HAPROXY_TERRAFORM_DIR}"
 
 # Additional HAProxy lifecycle variables (install/setup/hardening)
-HAPROXY_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/ha-proxy" >/dev/null 2>&1 && pwd)"
-if [[ -f "${HAPROXY_SCRIPT_DIR}/vars.sh" ]]; then
+HAPROXY_SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")/ha-proxy"
+if [[ -d "${HAPROXY_SCRIPT_DIR}" && -f "${HAPROXY_SCRIPT_DIR}/vars.sh" ]]; then
   # shellcheck disable=SC1090
   source "${HAPROXY_SCRIPT_DIR}/vars.sh"
 fi
 unset HAPROXY_SCRIPT_DIR
 
 # DNS lifecycle defaults (VM provisioning + dnsmasq settings)
-DNS_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/dns" >/dev/null 2>&1 && pwd)"
-if [[ -f "${DNS_SCRIPT_DIR}/vars.sh" ]]; then
+DNS_SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")/dns"
+if [[ -d "${DNS_SCRIPT_DIR}" && -f "${DNS_SCRIPT_DIR}/vars.sh" ]]; then
   # shellcheck disable=SC1090
   source "${DNS_SCRIPT_DIR}/vars.sh"
 fi
@@ -136,8 +136,8 @@ export KEEPALIVED_TRACK_SCRIPT_INTERVAL="2"
 export KEEPALIVED_TRACK_SCRIPT_WEIGHT="-20"
 
 # Talos lifecycle variables (talosctl install/provision wrappers)
-TALOS_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/talos" >/dev/null 2>&1 && pwd)"
-if [[ -f "${TALOS_SCRIPT_DIR}/vars.sh" ]]; then
+TALOS_SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")/talos"
+if [[ -d "${TALOS_SCRIPT_DIR}" && -f "${TALOS_SCRIPT_DIR}/vars.sh" ]]; then
   # shellcheck disable=SC1090
   source "${TALOS_SCRIPT_DIR}/vars.sh"
 fi

@@ -575,8 +575,17 @@ EOF_VARS
 export VSPHERE_ENDPOINT="192.168.0.233"
 export VSPHERE_USERNAME="root"
 export VSPHERE_PASSWORD="CHANGE_ME"
+export VSPHERE_DATASTORE="DATASTORE_02"
+export VSPHERE_NETWORK="VM Network"
+export VSPHERE_FOLDER=""
+export VSPHERE_RESOURCE_POOL=""
 export SSH_USER="vagrant"
 export HAPROXY_SSH_USER="vagrant"
+export TALOS_NAMESERVERS='["192.168.0.53"]'
+export TALOS_LOAD_BALANCER_RECONCILE_SCRIPT=""
+export TALOS_DNS_SYNC_REQUIRED="false"
+export TALOS_DNS_REGISTER_SCRIPT=""
+export TALOS_DNS_UNREGISTER_SCRIPT=""
 EOF_LOCAL
   fi
 
@@ -625,8 +634,8 @@ cluster.sh create-project --project-dir=${project_abs}
 
 ## Quick Flow
 
-1. Fill values in \`vars.sh\`.
-2. Optionally create \`vars.local.sh\` from \`vars.local.example.sh\`.
+1. Review the committed baseline in \`vars.sh\`.
+2. Create \`vars.local.sh\` from \`vars.local.example.sh\` for local or sensitive overrides.
 3. (Optional) Refresh Talos images from schematics if you changed schematic files:
 
 \`\`\`bash
