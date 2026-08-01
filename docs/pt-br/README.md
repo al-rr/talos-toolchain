@@ -15,3 +15,4 @@ um repositorio de laboratorio especifico.
 ## Guias Disponiveis
 
 - Variaveis de projeto day-1: `docs/pt-br/day1-project-vars.md`
+- Handoff entre repositorios: `talos-vsphere-lab/docs/pt-br/cross-repo-handoff.md`

@@ -15,3 +15,4 @@ specific lab repository.
 ## Available Guides
 
 - Day-1 project variables: `docs/en/day1-project-vars.md`
+- Cross-repository handoff: `talos-vsphere-lab/docs/en/cross-repo-handoff.md`
