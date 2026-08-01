@@ -46,7 +46,12 @@ Os defaults gerados incluem estes grupos.
 - `TALOS_CLUSTER_NAME`
 - `TALOS_CLUSTER_ENDPOINT`
 
-### Destino vSphere
+### Destino vSphere (compatibilidade/referencia)
+
+As variaveis abaixo descrevem a interface de provisionamento baseada em
+vSphere consumida pelo `provision-talos-vsphere`. Elas sao documentadas aqui
+apenas para compatibilidade e referencia — um cluster Talos local no macOS
+nao depende do vSphere e nao precisa dessas variaveis definidas.
 
 - `VSPHERE_ENDPOINT`
 - `VSPHERE_USERNAME`
