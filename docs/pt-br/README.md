@@ -5,6 +5,21 @@
 `talos-toolchain` fornece automacao reutilizavel de Talos sem acoplamento com
 um repositorio de laboratorio especifico.
 
+## Limite Local-First
+
+A direcao aceita para o Marco A e que o `talos-toolchain` seja o CTL Talos
+canonico e portavel para trabalho local de cluster no macOS, executando as
+acoes de lifecycle day-1 e day-2 do Talos (`cluster.sh`, `talos-gitops.sh`)
+sem depender do provisionamento VMware/vSphere. Um backend Talos local de
+primeira classe baseado em Docker/Colima ainda nao esta implementado — ele
+esta planejado para a Iteracao 5, apos o trabalho de contrato macOS/Bash da
+Iteracao 3. Ate la, o `cluster.sh` nao cria nem opera um cluster local no
+macOS de forma independente do VMware. O provisionamento de infraestrutura
+VMware/vSphere e responsabilidade do `provision-talos-vsphere`; quando o
+backend local for entregue, essa dependencia deixara de ser um pre-requisito
+do fluxo local. Uma direcao futura de configuracao Talos por usuario se apoia
+neste mesmo limite local-first.
+
 ## Secoes Planejadas
 
 - Arquitetura e limites de responsabilidade
@@ -16,4 +31,4 @@ um repositorio de laboratorio especifico.
 
 - Variaveis de projeto day-1: `docs/pt-br/day1-project-vars.md`
 - Requisitos de shell (contrato de preflight Bash 5 / macOS): `docs/pt-br/shell-requirements.md`
-- Handoff entre repositorios: `talos-vsphere-lab/docs/pt-br/cross-repo-handoff.md`
+- Handoff entre repositorios: `provision-talos-vsphere/docs/pt-br/cross-repo-handoff.md`
