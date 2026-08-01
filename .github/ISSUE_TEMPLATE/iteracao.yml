@@ -1,0 +1,38 @@
+name: Iteração
+description: Acompanhamento de uma iteração ou marco de trabalho
+title: "[NNN] "
+labels: ["iteration"]
+assignees: ["ednillibanio"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Uma issue por iteração, não por etapa. O detalhe técnico deve permanecer
+        no repositório; esta issue é o espelho externo para acompanhamento.
+  - type: input
+    id: referencia
+    attributes:
+      label: Referência da iteração
+      placeholder: docs/ ou marco NNN-tópico
+    validations:
+      required: true
+  - type: textarea
+    id: objetivo
+    attributes:
+      label: Objetivo
+    validations:
+      required: true
+  - type: textarea
+    id: etapas
+    attributes:
+      label: Etapas
+      value: "- [ ] Etapa 01 —\n- [ ] Etapa 02 —"
+    validations:
+      required: true
+  - type: input
+    id: branch
+    attributes:
+      label: Branch
+      placeholder: feature/<módulo>-<mudança>
+    validations:
+      required: false

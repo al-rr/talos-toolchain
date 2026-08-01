@@ -1,0 +1,31 @@
+name: Melhoria / Feature
+description: Pedido de melhoria pontual que ainda não virou uma iteração formal
+title: "[melhoria] "
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: modulo
+    attributes:
+      label: Módulo/área
+      options: ["day-1 lifecycle", "day-2 GitOps", "cluster scaffold", "shell library", "vSphere integration", "documentação", "novo módulo", "outro"]
+    validations:
+      required: true
+  - type: textarea
+    id: motivacao
+    attributes:
+      label: Motivação
+      description: Por que isso é necessário? Qual problema resolve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposta
+    attributes:
+      label: Proposta
+    validations:
+      required: true
+  - type: textarea
+    id: alternativas
+    attributes:
+      label: Alternativas consideradas
+    validations:
+      required: false
