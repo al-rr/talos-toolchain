@@ -36,6 +36,10 @@ SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
 
 # shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib/bash-preflight.sh"
+talos_require_bash5 "${SCRIPT_PATH}" "$@"
+
+# shellcheck disable=SC1091
 source "${SCRIPT_DIR}/lib/common.sh"
 
 ACTION=""
@@ -121,6 +125,14 @@ parse_args() {
 
   [[ -n "${ACTION}" ]] || { usage; die "Action is required."; }
   [[ -n "${KUBE_CONTEXT}" ]] || die "--kube-context is required."
+}
+
+preflight_cli_for_action() {
+  local action="$1"
+  case "${action}" in
+    install-platform-helm|install-addon|configure-talos-cluster-tools) talos_require_commands kubectl helm ;;
+    deploy-argocd-root-app) talos_require_commands kubectl ;;
+  esac
 }
 
 resolve_path() {
@@ -298,7 +310,7 @@ resolve_addons() {
     addons_csv="$(normalize_csv_list "${ADDONS_RAW}")"
     mapfile -t addons < <(csv_to_array "${addons_csv}")
   else
-    mapfile -t addons < <(find "${helm_dir}" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
+    mapfile -t addons < <(find "${helm_dir}" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
   fi
 
   system_exclude_csv="$(normalize_csv_list "${SYSTEM_EXCLUDE_ADDONS_RAW}")"
@@ -546,6 +558,8 @@ main() {
   [[ -f "${kubeconfig_file}" ]] || die "kubeconfig not found: ${kubeconfig_file}"
   KUBECONFIG="${kubeconfig_file}" kubectl config get-contexts "${KUBE_CONTEXT}" >/dev/null 2>&1 || \
     die "kube-context not found in kubeconfig: ${KUBE_CONTEXT}"
+
+  preflight_cli_for_action "${ACTION}"
 
   case "${ACTION}" in
     install-platform-helm)
