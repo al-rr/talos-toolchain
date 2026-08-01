@@ -37,8 +37,9 @@
 
 ## Implementation handoff
 
-- Implementation commits: pending final local commit.
-- Uncommitted changes included: documentation files listed above.
+- Implementation commits: `bc11bc3` (`docs(planning): add consolidated Talos
+  projects roadmap`).
+- Uncommitted changes included: none at handoff.
 - Local validation performed: Markdown structure, internal decision keywords,
   branch state, and staged-diff checks before commit.
 - Known limitations: root workspace is not versioned; canonical copies now live
