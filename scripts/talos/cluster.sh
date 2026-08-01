@@ -50,6 +50,10 @@ SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 # shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib/bash-preflight.sh"
+talos_require_bash5 "${SCRIPT_PATH}" "$@"
+
+# shellcheck disable=SC1091
 source "${REPO_ROOT}/scripts/talos/lib/common.sh"
 
 ACTION=""
@@ -160,6 +164,17 @@ parse_args() {
   done
 
   [[ -n "${ACTION}" ]] || { usage; die "Action is required."; }
+}
+
+preflight_cli_for_action() {
+  local action="$1"
+  case "${action}" in
+    create-project|refresh-schematics) talos_require_commands curl ;;
+    generate|prepare-bootstrap|apply-config|bootstrap) talos_require_commands talosctl govc ;;
+    provision) talos_require_commands govc ;;
+    sync-access) talos_require_commands talosctl kubectl ;;
+    apply-post-bootstrap) talos_require_commands talosctl kubectl helm ;;
+  esac
 }
 
 run_or_echo() {
@@ -703,6 +718,8 @@ main() {
       source "${LOCAL_VARS_FILE}"
     fi
   fi
+
+  preflight_cli_for_action "${ACTION}"
 
   case "${ACTION}" in
     create-project)

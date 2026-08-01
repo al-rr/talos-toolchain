@@ -29,4 +29,5 @@ this same local-first boundary.
 ## Available Guides
 
 - Day-1 project variables: `docs/en/day1-project-vars.md`
+- Shell requirements (Bash 5 / macOS preflight contract): `docs/en/shell-requirements.md`
 - Cross-repository handoff: `provision-talos-vsphere/docs/en/cross-repo-handoff.md`

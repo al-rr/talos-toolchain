@@ -1,0 +1,13 @@
+#!/bin/sh
+# Test fixture only: simulates a Bash 5 candidate for lib/bash-preflight.sh
+# tests. Not a real Bash build; never invoked by production code.
+
+if [ "$1" = "-c" ]; then
+  echo "5"
+  exit 0
+fi
+
+if [ -n "${TALOS_PREFLIGHT_TEST_MARKER:-}" ]; then
+  printf '%s' "$*" > "${TALOS_PREFLIGHT_TEST_MARKER}"
+fi
+exit 0
