@@ -71,8 +71,9 @@ must not be performed automatically by an agent.
 
 **Current boundary problems — FACT**
 
-- Some lifecycle scripts are duplicated and have drifted in
-  `provision-talos-vsphere`.
+- Lifecycle duplication has drifted in both directions: the provisioning repo
+  retains older command indirection and integration hooks, while the toolchain
+  contains lifecycle and add-on scripts absent from the provisioning copy.
 - The scaffold currently contains concrete lab-oriented defaults that should
   not be stamped into tracked project configuration.
 - Active code uses Bash features unavailable in Apple's Bash 3.2, including
@@ -249,6 +250,9 @@ The exact filenames are an issue-level decision. Preserve these rules:
 - Bootstrap refuses root/sudo to avoid writing into the wrong home directory.
 - Before sourcing shell files, verify regular-file type, current-user ownership,
   and absence of group/world write permission.
+- Retrofit the same checks into existing `vars.sh` and `vars.local.sh` sourcing
+  paths in both `talos-toolchain` and `provision-talos-vsphere`; they are not
+  limited to the new environment loader.
 - Diagnostic output redacts secret values.
 - Generated talosconfig, kubeconfig, certificates, and machine configs are
   protected files, not multiline values embedded in `credentials.sh`.
@@ -561,6 +565,9 @@ fix(scaffold): omit site-specific project defaults
 
 Repository: `talos-toolchain`.
 
+Depends on Iteration 3 passing its Bash 5/macOS contract. Do not add a new local
+cluster shell workflow on top of the currently unsupported Apple Bash 3.2 path.
+
 - Add explicit Docker/Colima local-cluster create/status/destroy workflow.
 - Isolate cluster name, state, talosconfig, and kubeconfig.
 - Add generation/validation-only modes.
@@ -596,6 +603,9 @@ docs(argocd): document branch promotion model
 
 Repositories: `talos-toolchain` and `talos-vsphere-gitops`, separate PRs.
 
+Depends on Iteration 6 landing first so the handoff validates an already-defined
+and consistently rendered environment revision.
+
 - Verify identical environment revision and rendered Cilium content before
   bootstrap.
 - Define readiness conditions before Argo adoption.
@@ -614,6 +624,10 @@ docs(cilium): define bootstrap adoption contract
 Repositories: toolchain and GitOps, separate PRs.
 
 - Bootstrap Argo CD against `lab` in the local cluster.
+- Verify the pinned Cilium, cert-manager, Longhorn, and
+  kube-prometheus-stack chart versions against the Kubernetes version created
+  by the local Docker Talos cluster; record unsupported or topology-dependent
+  components explicitly.
 - Validate cert-manager and monitoring where locally meaningful.
 - Mark Longhorn or other topology-dependent validations as conditional rather
   than claiming VMware-equivalent coverage.
