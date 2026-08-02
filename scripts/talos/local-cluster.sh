@@ -3,7 +3,7 @@
 # @brief Isolated local Talos Docker/Colima lifecycle wrapper (Milestone A).
 # @description
 #   Dedicated create/status/destroy wrapper around `talosctl cluster create
-#   --provisioner docker` for a single local development cluster. This is a
+#   docker` for a single local development cluster. This is a
 #   separate entrypoint from the vSphere-oriented cluster.sh: it never
 #   sources vSphere/VMware variables, never touches provision-talos-vsphere,
 #   and never installs, starts, or reconfigures Colima or the Docker daemon.
@@ -24,7 +24,9 @@
 #   layout, cluster directory, Talos state directory, talosconfig,
 #   kubeconfig, wrapper marker) is also checked for symlinks before it is
 #   read, written, created, passed to talosctl, or removed.
-# @arg --controlplanes int Control-plane node count for create (default 1).
+# @arg --controlplanes int Control-plane node count for create. The Talos
+#   Docker backend supports exactly 1; any other value is rejected before
+#   talosctl is invoked (default 1).
 # @arg --workers int Worker node count for create (default 1).
 # @flag --confirm-destroy Required to actually run destroy (not needed for --dry-run).
 # @flag --dry-run,-n Print actions without executing or mutating the host.
@@ -76,7 +78,8 @@ Options:
                          and dashes only, e.g. "dev" or "talos-local-1"
   --state-root=<path>    Override the XDG state root (advanced/test use).
                          Must be absolute, not "/", and free of ".." segments.
-  --controlplanes=<n>    Control-plane node count for create (default 1)
+  --controlplanes=<n>    Control-plane node count for create (default 1).
+                         The Talos Docker backend supports exactly 1.
   --workers=<n>          Worker node count for create (default 1)
   --confirm-destroy      Required to actually run destroy (not required with --dry-run)
   -n, --dry-run          Print actions without executing or mutating the host
@@ -130,6 +133,17 @@ require_safe_cluster_name() {
 }
 
 USING_STATE_ROOT_OVERRIDE="false"
+
+# @description The Talos Docker backend (`talosctl cluster create docker`)
+#   exposes no control-plane-count flag and always creates exactly one
+#   control plane. Reject any other requested count explicitly instead of
+#   silently ignoring it.
+require_docker_controlplanes_supported() {
+  local count="$1"
+  if [[ "${count}" != "1" ]]; then
+    die "--controlplanes=${count} is not supported: the Talos Docker backend always creates exactly 1 control plane."
+  fi
+}
 
 # @description Rejects a state root that is not an absolute path, is exactly
 #   "/", or contains a ".." path segment anywhere (traversal-shaped, even
@@ -269,6 +283,7 @@ preflight_common() {
 
 do_create() {
   require_safe_cluster_name "${CLUSTER_NAME}"
+  require_docker_controlplanes_supported "${CONTROLPLANES}"
   local state_root=""
   state_root="$(resolve_state_root)"
   set_cluster_paths "${state_root}" "${CLUSTER_NAME}"
@@ -284,12 +299,10 @@ do_create() {
   fi
 
   local create_cmd=(
-    talosctl cluster create
+    talosctl cluster create docker
     --name "${CLUSTER_NAME}"
-    --provisioner docker
     --state "${TALOS_STATE_DIR}"
-    --talosconfig "${TALOSCONFIG_PATH}"
-    --controlplanes "${CONTROLPLANES}"
+    --talosconfig-destination "${TALOSCONFIG_PATH}"
     --workers "${WORKERS}"
   )
   local kubeconfig_cmd=(
@@ -350,7 +363,6 @@ do_status() {
     --name "${CLUSTER_NAME}"
     --provisioner docker
     --state "${TALOS_STATE_DIR}"
-    --talosconfig "${TALOSCONFIG_PATH}"
   )
 
   if [[ "${DRY_RUN}" == "true" ]]; then
@@ -385,7 +397,6 @@ do_destroy() {
   local destroy_cmd=(
     talosctl cluster destroy
     --name "${CLUSTER_NAME}"
-    --provisioner docker
     --state "${TALOS_STATE_DIR}"
   )
 
