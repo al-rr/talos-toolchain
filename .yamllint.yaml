@@ -1,0 +1,21 @@
+# Versioned yamllint policy for talos-toolchain tracked YAML.
+#
+# Extends yamllint's "default" ruleset and relaxes only what this
+# repository's real YAML files require. It does not disable the ruleset
+# wholesale.
+extends: default
+
+rules:
+  line-length:
+    # GitHub issue-form "dropdown" options are a single flow-sequence line;
+    # the longest tracked line today is ~153 chars. 160 gives headroom
+    # without disabling the check.
+    max: 160
+  document-start:
+    # Issue-form templates and workflow files in this repository do not use
+    # a leading "---" document marker.
+    present: false
+  truthy:
+    # GitHub Actions workflows use the bare `on:` trigger key; do not flag
+    # map keys, only scalar values.
+    check-keys: false

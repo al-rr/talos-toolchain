@@ -1,0 +1,26 @@
+name: YAML style
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  yaml-style:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install yamllint
+        run: python3 -m pip install "yamllint==1.38.0"
+
+      - name: Run YAML style check
+        run: bash scripts/talos/tests/test-yaml-style.sh
