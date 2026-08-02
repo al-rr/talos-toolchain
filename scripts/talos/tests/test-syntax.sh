@@ -13,7 +13,9 @@ TALOS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 TARGETS=(
   "${TALOS_DIR}/lib/bash-preflight.sh"
   "${TALOS_DIR}/lib/common.sh"
+  "${TALOS_DIR}/lib/yaml-config.sh"
   "${TALOS_DIR}/cluster.sh"
+  "${TALOS_DIR}/config.sh"
   "${TALOS_DIR}/talos-gitops.sh"
   "${TALOS_DIR}/cluster-bootstrap.sh"
   "${TALOS_DIR}/apply-post-bootstrap.sh"
@@ -43,7 +45,9 @@ done
 # scripts/talos/ carry pre-existing warnings out of this iteration's scope.
 SHELLCHECK_TARGETS=(
   "${TALOS_DIR}/lib/bash-preflight.sh"
+  "${TALOS_DIR}/lib/yaml-config.sh"
   "${TALOS_DIR}/cluster.sh"
+  "${TALOS_DIR}/config.sh"
   "${TALOS_DIR}/talos-gitops.sh"
 )
 

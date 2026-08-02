@@ -5,6 +5,11 @@ Este documento descreve as variaveis de projeto consumidas por
 
 ## Escopo
 
+`vars.sh`/`vars.local.sh` sao um caminho de compatibilidade temporario. O
+contrato de configuracao primario, somente-dados, e a camada YAML via XDG
+descrita em [`environment-config.md`](environment-config.md) — prefira-a
+para novos valores, sejam nao-secretos ou secretos.
+
 Cada projeto de cluster gerado e a fonte de verdade das operacoes de day-1.
 
 Estrutura tipica:

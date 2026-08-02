@@ -5,6 +5,11 @@ This document describes the project variables consumed by
 
 ## Scope
 
+`vars.sh`/`vars.local.sh` are a temporary compatibility path. The primary,
+data-only configuration contract is the XDG YAML layer described in
+[`environment-config.md`](environment-config.md) — prefer it for new
+non-secret and secret values.
+
 Each generated cluster project is the source of truth for day-1 operations.
 
 Typical layout:

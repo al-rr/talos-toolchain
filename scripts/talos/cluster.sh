@@ -55,6 +55,8 @@ talos_require_bash5 "${SCRIPT_PATH}" "$@"
 
 # shellcheck disable=SC1091
 source "${REPO_ROOT}/scripts/talos/lib/common.sh"
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/scripts/talos/lib/yaml-config.sh"
 
 ACTION=""
 VARS_FILE=""
@@ -67,6 +69,7 @@ ADDONS_LIST=""
 TALOS_VERSION=""
 CP_SCHEMATIC_FILE=""
 WORKER_SCHEMATIC_FILE=""
+CONFIG_ENVIRONMENT=""
 UPDATE_OVA_FROM_SCHEMATIC="true"
 FORCE_GENERATE="false"
 DRY_RUN="false"
@@ -98,6 +101,7 @@ Options:
   --talos-version=<version>       Talos version for image tags (example: v1.12.4)
   --cp-schematic-file=<path>      CP schematic file (default: <project>/schematic.cp.yaml)
   --worker-schematic-file=<path>  Worker schematic file (default: <project>/schematic.worker.yaml, fallback schematic.yaml)
+  --environment=<name>            XDG YAML config environment name (default: project/cluster name)
   --force-generate                Force regeneration of Talos config files
   --no-update-ova                 Do not rewrite TALOS_OVA_PATH during refresh-schematics
   -n, --dry-run                   Print actions without executing
@@ -152,6 +156,7 @@ parse_args() {
       --talos-version=*) TALOS_VERSION="${1#*=}"; shift ;;
       --cp-schematic-file=*) CP_SCHEMATIC_FILE="${1#*=}"; shift ;;
       --worker-schematic-file=*) WORKER_SCHEMATIC_FILE="${1#*=}"; shift ;;
+      --environment=*) CONFIG_ENVIRONMENT="${1#*=}"; shift ;;
       --force-generate) FORCE_GENERATE="true"; shift ;;
       --no-update-ova) UPDATE_OVA_FROM_SCHEMATIC="false"; shift ;;
       -n|--dry-run) DRY_RUN="true"; shift ;;
@@ -501,44 +506,46 @@ source "\${BASE_VARS}"
 
 export TALOS_CLUSTER_NAME="${cluster_name}"
 
-# vSphere target (required for provision)
-export VSPHERE_ENDPOINT="192.168.0.233"
-export VSPHERE_USERNAME="root"
-export VSPHERE_PASSWORD="CHANGE_ME"
+# vSphere target (required for provision). Set real values in vars.local.sh
+# or in the XDG environment config/credentials (see config.yaml + config.sh).
+export VSPHERE_ENDPOINT=""
+export VSPHERE_USERNAME=""
+export VSPHERE_PASSWORD=""
 export VSPHERE_INSECURE_CONNECTION="true"
-export VSPHERE_DATASTORE="DATASTORE_02"
-export VSPHERE_NETWORK="VM Network"
+export VSPHERE_DATASTORE=""
+export VSPHERE_NETWORK=""
 export VSPHERE_FOLDER=""
 export VSPHERE_RESOURCE_POOL=""
 
 # SSH user defaults (controller -> helper VMs such as HAProxy/DNS)
-export BUILD_USERNAME="vagrant"
-export SSH_USER="vagrant"
+export BUILD_USERNAME=""
+export SSH_USER=""
 export ANSIBLE_USER="\${ANSIBLE_USER:-\${SSH_USER}}"
 export ANSIBLE_USERNAME="\${ANSIBLE_USERNAME:-\${SSH_USER}}"
 export SSH_PORT="22"
 export HAPROXY_SSH_USER="\${HAPROXY_SSH_USER:-\${SSH_USER}}"
 
 # Talos access endpoint
-export HAPROXY_VIP="192.168.0.30"
+export HAPROXY_VIP=""
 export HAPROXY_NODE_1_NAME="talos-lb-1"
-export HAPROXY_NODE_1_IP="192.168.0.31"
+export HAPROXY_NODE_1_IP=""
 export HAPROXY_NODE_2_NAME="talos-lb-2"
-export HAPROXY_NODE_2_IP="192.168.0.32"
+export HAPROXY_NODE_2_IP=""
 export TALOS_LOAD_BALANCER_RECONCILE_SCRIPT=""
 export TALOS_CLUSTER_ENDPOINT="https://\${HAPROXY_VIP}:6443"
 
-# Talos image source (choose one primary strategy)
-export TALOS_OVA_PATH="https://factory.talos.dev/image/<schematic-id>/v1.12.4/vmware-amd64.ova"
-export TALOS_ISO_DATASTORE_PATH="ISOs/talos-v1.12.4-uefi.iso"
+# Talos image source (choose one primary strategy). Fill in after
+# cluster.sh refresh-schematics --project-dir=... --talos-version=vX.Y.Z
+export TALOS_OVA_PATH=""
+export TALOS_ISO_DATASTORE_PATH=""
 # Optional local ISO used for automatic datastore upload in ISO mode
 export TALOS_ISO_LOCAL_PATH=""
 
 # Cluster topology
 export TALOS_CONTROL_PLANE_COUNT="3"
 export TALOS_WORKER_COUNT="3"
-export TALOS_CONTROL_PLANE_IPS='["192.168.0.61","192.168.0.62","192.168.0.63"]'
-export TALOS_WORKER_IPS='["192.168.0.71","192.168.0.72","192.168.0.73"]'
+export TALOS_CONTROL_PLANE_IPS='[]'
+export TALOS_WORKER_IPS='[]'
 export TALOS_CONTROL_PLANE_NAME_PREFIX="\${TALOS_CLUSTER_NAME}-cp"
 export TALOS_WORKER_NAME_PREFIX="\${TALOS_CLUSTER_NAME}-worker"
 
@@ -553,14 +560,14 @@ export TALOS_WORKER_DISK_GB="40"
 export TALOS_WORKER_EXTRA_DISK_GB="40"
 
 # Networking
-export TALOS_GATEWAY="192.168.0.2"
+export TALOS_GATEWAY=""
 export TALOS_NETMASK_PREFIX="24"
 export TALOS_NODE_INTERFACE="eth0"
 # Keep false when using external LB (HAProxy/keepalived VIP).
 # Enable only if you intentionally run Talos CP interface VIP with a distinct IP.
 export TALOS_CONTROL_PLANE_VIP_ENABLED="false"
 export TALOS_CONTROL_PLANE_VIP="\${HAPROXY_VIP}"
-export TALOS_NAMESERVERS='["1.1.1.1","8.8.8.8"]'
+export TALOS_NAMESERVERS='[]'
 
 # CNI baseline
 export TALOS_DISABLE_DEFAULT_CNI="true"
@@ -585,23 +592,35 @@ EOF_VARS
   if [[ ! -f "${project_abs}/vars.local.example.sh" ]]; then
     cat > "${project_abs}/vars.local.example.sh" <<'EOF_LOCAL'
 #!/usr/bin/env bash
-# Copy to vars.local.sh and customize sensitive values.
+# Copy to vars.local.sh and customize sensitive values, or prefer the XDG
+# environment credentials file managed by config.sh (see
+# docs/en/environment-config.md).
 
-export VSPHERE_ENDPOINT="192.168.0.233"
-export VSPHERE_USERNAME="root"
-export VSPHERE_PASSWORD="CHANGE_ME"
-export VSPHERE_DATASTORE="DATASTORE_02"
-export VSPHERE_NETWORK="VM Network"
+export VSPHERE_ENDPOINT=""
+export VSPHERE_USERNAME=""
+export VSPHERE_PASSWORD=""
+export VSPHERE_DATASTORE=""
+export VSPHERE_NETWORK=""
 export VSPHERE_FOLDER=""
 export VSPHERE_RESOURCE_POOL=""
-export SSH_USER="vagrant"
-export HAPROXY_SSH_USER="vagrant"
-export TALOS_NAMESERVERS='["192.168.0.53"]'
+export SSH_USER=""
+export HAPROXY_SSH_USER=""
+export TALOS_NAMESERVERS='[]'
 export TALOS_LOAD_BALANCER_RECONCILE_SCRIPT=""
 export TALOS_DNS_SYNC_REQUIRED="false"
 export TALOS_DNS_REGISTER_SCRIPT=""
 export TALOS_DNS_UNREGISTER_SCRIPT=""
 EOF_LOCAL
+  fi
+
+  if [[ ! -f "${project_abs}/config.yaml" ]]; then
+    cat > "${project_abs}/config.yaml" <<EOF_PROJECT_CONFIG
+# Tracked, non-secret project intent (committed). Secrets belong in the XDG
+# environment credentials file managed by config.sh, never here.
+# See docs/en/environment-config.md for the field reference.
+cluster:
+  name: "${cluster_name}"
+EOF_PROJECT_CONFIG
   fi
 
   if [[ ! -f "${project_abs}/.gitignore" ]]; then
@@ -710,13 +729,27 @@ main() {
   fi
 
   if [[ "${ACTION}" != "create-project" ]]; then
+    [[ -n "${CONFIG_ENVIRONMENT}" ]] || CONFIG_ENVIRONMENT="${CLUSTER_NAME:-default}"
+    talos_config_require_valid_env_name "${CONFIG_ENVIRONMENT}"
+    talos_config_require_yq
+
+    # Legacy vars.sh/vars.local.sh are a compatibility layer only: source them
+    # first so the YAML environment/credentials layers loaded afterward always
+    # take precedence (defaults, base, project, environment, credentials, then
+    # CLI flags applied by callers of this function).
     [[ -f "${VARS_FILE}" ]] || die "Vars file not found: ${VARS_FILE}"
+    talos_config_check_legacy_shell_secure "${VARS_FILE}" || die "Refusing to source insecure vars file: ${VARS_FILE}"
     # shellcheck disable=SC1090
     source "${VARS_FILE}"
     if [[ -n "${LOCAL_VARS_FILE}" && -f "${LOCAL_VARS_FILE}" ]]; then
+      talos_config_check_legacy_shell_secure "${LOCAL_VARS_FILE}" || die "Refusing to source insecure local vars file: ${LOCAL_VARS_FILE}"
       # shellcheck disable=SC1090
       source "${LOCAL_VARS_FILE}"
     fi
+
+    local project_config_file=""
+    [[ -n "${project_abs}" && -f "${project_abs}/config.yaml" ]] && project_config_file="${project_abs}/config.yaml"
+    talos_config_load "${CONFIG_ENVIRONMENT}" "${project_config_file}"
   fi
 
   preflight_cli_for_action "${ACTION}"
