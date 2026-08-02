@@ -31,4 +31,5 @@ this same local-first boundary.
 - Day-1 project variables: `docs/en/day1-project-vars.md`
 - XDG YAML environment configuration (`config.sh`): `docs/en/environment-config.md`
 - Shell requirements (Bash 5 / macOS preflight contract): `docs/en/shell-requirements.md`
+- YAML style policy and local/CI lint check: `docs/en/yaml-style.md`
 - Cross-repository handoff: `provision-talos-vsphere/docs/en/cross-repo-handoff.md`
