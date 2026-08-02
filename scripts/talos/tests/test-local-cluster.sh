@@ -73,16 +73,22 @@ else
   fail "create --dry-run must not create ${cluster_dir}"
 fi
 
-if [[ "${output}" == *"--provisioner docker"* && "${output}" == *"--name dry-run-cluster"* ]]; then
-  pass "create --dry-run prints the planned talosctl cluster create command"
+if [[ "${output}" == *"talosctl cluster create docker"* && "${output}" == *"--name dry-run-cluster"* ]]; then
+  pass "create --dry-run prints the explicit 'talosctl cluster create docker' command"
 else
   fail "create --dry-run output missing expected talosctl invocation: ${output}"
 fi
 
-if [[ "${output}" == *"${STATE_ROOT}/dry-run-cluster/talosconfig"* ]]; then
-  pass "create --dry-run uses an isolated talosconfig path under the cluster dir"
+if [[ "${output}" != *"cluster create --provisioner docker"* && "${output}" != *"cluster create dev"* ]]; then
+  pass "create --dry-run never emits the deprecated generic create or QEMU dev invocation"
 else
-  fail "create --dry-run did not reference an isolated talosconfig path: ${output}"
+  fail "create --dry-run must not emit the deprecated --provisioner docker or dev invocation: ${output}"
+fi
+
+if [[ "${output}" == *"--talosconfig-destination ${STATE_ROOT}/dry-run-cluster/talosconfig"* ]]; then
+  pass "create --dry-run uses an isolated --talosconfig-destination path under the cluster dir"
+else
+  fail "create --dry-run did not reference an isolated --talosconfig-destination path: ${output}"
 fi
 
 # --- create for real (stubbed talosctl/docker/colima): isolated paths, marker written ---
@@ -145,6 +151,32 @@ else
   fail "traversal name must not create any directory"
 fi
 
+# --- --controlplanes other than 1 is rejected: the Docker backend has no
+#     control-plane-count flag and always creates exactly one ---
+
+reset_logs
+status=0
+output="$(run_local_cluster create --name=too-many-cp --state-root="${STATE_ROOT}" --controlplanes=3 --dry-run 2>&1)" || status=$?
+if [[ "${status}" -ne 0 ]]; then
+  pass "create rejects --controlplanes=3 (Docker backend supports exactly 1)"
+else
+  fail "create should reject --controlplanes=3: ${output}"
+fi
+if [[ ! -s "${STUB_LOG_DIR}/talosctl.log" ]]; then
+  pass "no stub talosctl call is made when --controlplanes is unsupported"
+else
+  fail "an unsupported --controlplanes must never reach talosctl: $(cat "${STUB_LOG_DIR}/talosctl.log")"
+fi
+
+reset_logs
+status=0
+output="$(run_local_cluster create --name=one-cp-ok --state-root="${STATE_ROOT}" --controlplanes=1 --dry-run 2>&1)" || status=$?
+if [[ "${status}" -eq 0 ]]; then
+  pass "create accepts the explicit --controlplanes=1"
+else
+  fail "create should accept --controlplanes=1: ${output}"
+fi
+
 # --- status is read-only and works whether or not a marker exists ---
 
 reset_logs
@@ -170,6 +202,22 @@ else
   fail "status must remain read-only"
 fi
 
+# --- status --dry-run: talosctl cluster show supports --provisioner but not
+#     --talosconfig; the wrapper must pass the former and never the latter ---
+
+status=0
+output="$(run_local_cluster status --name=real-cluster --state-root="${STATE_ROOT}" --dry-run 2>&1)" || status=$?
+if [[ "${status}" -eq 0 && "${output}" == *"talosctl cluster show"* && "${output}" == *"--provisioner docker"* ]]; then
+  pass "status --dry-run previews talosctl cluster show with --provisioner docker"
+else
+  fail "status --dry-run did not preview the expected talosctl cluster show invocation: ${output}"
+fi
+if [[ "${output}" != *"--talosconfig "* ]]; then
+  pass "status --dry-run never passes the unsupported --talosconfig flag to cluster show"
+else
+  fail "status --dry-run must not pass --talosconfig to talosctl cluster show: ${output}"
+fi
+
 # --- destroy without --confirm-destroy refuses to run ---
 
 status=0
@@ -193,6 +241,11 @@ if [[ "${status}" -eq 0 && "${output}" == *"talosctl cluster destroy"* ]]; then
   pass "destroy --dry-run previews the planned talosctl destroy command"
 else
   fail "destroy --dry-run did not preview as expected: ${output}"
+fi
+if [[ "${output}" != *"--provisioner"* ]]; then
+  pass "destroy --dry-run never passes the unsupported --provisioner flag to cluster destroy"
+else
+  fail "destroy --dry-run must not pass --provisioner to talosctl cluster destroy: ${output}"
 fi
 if [[ -d "${cluster_dir}" ]]; then
   pass "destroy --dry-run leaves the cluster directory intact"
