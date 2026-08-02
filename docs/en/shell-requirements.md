@@ -83,8 +83,11 @@ baked into the toolchain.
 
 ## Docker/Colima
 
-A local Docker/Colima execution backend is out of scope for this contract
-and is planned for a later iteration. It is not implemented here.
+The `cluster.sh`/`talos-gitops.sh` Bash-5 preflight contract above does not
+cover a Docker/Colima execution backend. That is a separate Milestone-A
+entrypoint, `scripts/talos/local-cluster.sh`, with its own Bash 5 preflight
+and its own `talosctl`/Docker/Colima CLI preflight — see
+`docs/en/local-cluster.md`.
 
 ## Known limitations
 

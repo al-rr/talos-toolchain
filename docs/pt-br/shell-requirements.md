@@ -89,9 +89,11 @@ ferramentas — a fonte da verdade e sempre a selecao feita por projeto em
 
 ## Docker/Colima
 
-Um backend de execucao local com Docker/Colima esta fora do escopo deste
-contrato e esta planejado para uma iteracao futura. Nao esta implementado
-aqui.
+O contrato de preflight Bash 5 do `cluster.sh`/`talos-gitops.sh` acima nao
+cobre um backend de execucao Docker/Colima. Esse e um entrypoint separado do
+Marco A, `scripts/talos/local-cluster.sh`, com seu proprio preflight de Bash 5
+e seu proprio preflight de CLIs `talosctl`/Docker/Colima — veja
+`docs/pt-br/local-cluster.md`.
 
 ## Limitacoes conhecidas
 

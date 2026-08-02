@@ -11,14 +11,13 @@ A direcao aceita para o Marco A e que o `talos-toolchain` seja o CTL Talos
 canonico e portavel para trabalho local de cluster no macOS, executando as
 acoes de lifecycle day-1 e day-2 do Talos (`cluster.sh`, `talos-gitops.sh`)
 sem depender do provisionamento VMware/vSphere. Um backend Talos local de
-primeira classe baseado em Docker/Colima ainda nao esta implementado — ele
-esta planejado para a Iteracao 5, apos o trabalho de contrato macOS/Bash da
-Iteracao 3. Ate la, o `cluster.sh` nao cria nem opera um cluster local no
-macOS de forma independente do VMware. O provisionamento de infraestrutura
-VMware/vSphere e responsabilidade do `provision-talos-vsphere`; quando o
-backend local for entregue, essa dependencia deixara de ser um pre-requisito
-do fluxo local. Uma direcao futura de configuracao Talos por usuario se apoia
-neste mesmo limite local-first.
+primeira classe baseado em Docker/Colima agora existe como um entrypoint
+separado do Marco A, `scripts/talos/local-cluster.sh` (veja
+`docs/pt-br/local-cluster.md`); o proprio `cluster.sh` continua voltado ao
+vSphere e nao cria nem opera um cluster local no macOS. O provisionamento de
+infraestrutura VMware/vSphere e responsabilidade do `provision-talos-vsphere`
+e nao e pre-requisito do fluxo local via Docker. Uma direcao futura de
+configuracao Talos por usuario se apoia neste mesmo limite local-first.
 
 ## Secoes Planejadas
 
@@ -32,5 +31,6 @@ neste mesmo limite local-first.
 - Variaveis de projeto day-1: `docs/pt-br/day1-project-vars.md`
 - Configuracao YAML de ambiente via XDG (`config.sh`): `docs/pt-br/environment-config.md`
 - Requisitos de shell (contrato de preflight Bash 5 / macOS): `docs/pt-br/shell-requirements.md`
+- Cluster Talos local (Docker/Colima, `local-cluster.sh`): `docs/pt-br/local-cluster.md`
 - Politica de estilo YAML e checagem local/CI: `docs/pt-br/yaml-style.md`
 - Handoff entre repositorios: `provision-talos-vsphere/docs/pt-br/cross-repo-handoff.md`
