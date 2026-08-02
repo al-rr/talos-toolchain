@@ -15,6 +15,7 @@ TARGETS=(
   "${TALOS_DIR}/lib/common.sh"
   "${TALOS_DIR}/lib/yaml-config.sh"
   "${TALOS_DIR}/cluster.sh"
+  "${TALOS_DIR}/local-cluster.sh"
   "${TALOS_DIR}/config.sh"
   "${TALOS_DIR}/talos-gitops.sh"
   "${TALOS_DIR}/cluster-bootstrap.sh"
@@ -47,6 +48,7 @@ SHELLCHECK_TARGETS=(
   "${TALOS_DIR}/lib/bash-preflight.sh"
   "${TALOS_DIR}/lib/yaml-config.sh"
   "${TALOS_DIR}/cluster.sh"
+  "${TALOS_DIR}/local-cluster.sh"
   "${TALOS_DIR}/config.sh"
   "${TALOS_DIR}/talos-gitops.sh"
 )

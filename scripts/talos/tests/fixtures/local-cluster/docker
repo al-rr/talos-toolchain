@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Test fixture only: stub docker CLI for scripts/talos/local-cluster.sh
+# tests. Never talks to a real Docker daemon. Not a real docker build.
+set -euo pipefail
+
+if [[ -n "${STUB_DOCKER_LOG:-}" ]]; then
+  printf '%s\n' "$*" >> "${STUB_DOCKER_LOG}"
+fi
+
+if [[ "$1" == "info" ]]; then
+  if [[ "${STUB_DOCKER_INFO_FAIL:-false}" == "true" ]]; then
+    echo "stub docker: daemon not responsive" >&2
+    exit 1
+  fi
+  echo "stub docker: daemon responsive"
+  exit 0
+fi
+
+exit 0

@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Test fixture only: stub colima CLI for scripts/talos/local-cluster.sh
+# tests. Never starts or configures a real Colima instance. Not a real
+# colima build.
+set -euo pipefail
+
+if [[ -n "${STUB_COLIMA_LOG:-}" ]]; then
+  printf '%s\n' "$*" >> "${STUB_COLIMA_LOG}"
+fi
+
+if [[ "$1" == "status" ]]; then
+  if [[ "${STUB_COLIMA_STATUS_FAIL:-false}" == "true" ]]; then
+    echo "stub colima: not running" >&2
+    exit 1
+  fi
+  echo "stub colima: running"
+  exit 0
+fi
+
+exit 0

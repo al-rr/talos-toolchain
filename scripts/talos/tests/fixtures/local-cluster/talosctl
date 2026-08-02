@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Test fixture only: stub talosctl for scripts/talos/local-cluster.sh tests.
+# Records every invocation to STUB_TALOSCTL_LOG and never touches a real
+# Talos/Docker cluster. Not a real talosctl build.
+set -euo pipefail
+
+if [[ -n "${STUB_TALOSCTL_LOG:-}" ]]; then
+  printf '%s\n' "$*" >> "${STUB_TALOSCTL_LOG}"
+fi
+
+if [[ "${STUB_TALOSCTL_FAIL:-false}" == "true" ]]; then
+  echo "stub talosctl: forced failure" >&2
+  exit 1
+fi
+
+if [[ "$1" == "kubeconfig" ]]; then
+  : > "$2"
+  exit 0
+fi
+
+if [[ "$1" == "cluster" && "$2" == "show" ]]; then
+  echo "stub talosctl: cluster show output"
+  exit 0
+fi
+
+exit 0
