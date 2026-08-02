@@ -30,5 +30,6 @@ neste mesmo limite local-first.
 ## Guias Disponiveis
 
 - Variaveis de projeto day-1: `docs/pt-br/day1-project-vars.md`
+- Configuracao YAML de ambiente via XDG (`config.sh`): `docs/pt-br/environment-config.md`
 - Requisitos de shell (contrato de preflight Bash 5 / macOS): `docs/pt-br/shell-requirements.md`
 - Handoff entre repositorios: `provision-talos-vsphere/docs/pt-br/cross-repo-handoff.md`
