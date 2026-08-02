@@ -1,0 +1,29 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: addon-cilium
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  sources:
+    - repoURL: oci://quay.io/cilium/charts
+      chart: cilium
+      targetRevision: 1.19.1
+      helm:
+        releaseName: cilium
+        valueFiles:
+          - $values/environments/lab/helm/cilium/values.yaml
+    - repoURL: https://github.com/ednillibanio/talos-vsphere-gitops.git
+      targetRevision: lab
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: false
+    syncOptions:
+      - CreateNamespace=true

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Test fixture only: stub kubectl for scripts/talos/tests/test-cilium-handoff.sh.
+# Only answers 'config get-contexts <name>' so talos-gitops.sh's preflight
+# context check can pass; any other invocation fails loudly, proving the
+# day-2 system-exclusion die happens before any real kubectl call.
+set -euo pipefail
+
+if [[ "$1" == "config" && "$2" == "get-contexts" ]]; then
+  echo "stub kubectl: context ${3:-} found"
+  exit 0
+fi
+
+echo "stub kubectl: unexpected invocation: $*" >&2
+exit 1
