@@ -100,11 +100,20 @@ else
 fi
 
 # --- talos_require_bash5: re-exec against a fake Bash 5 candidate fixture ---
+#
+# All talos_require_bash5 scenarios below override
+# _talos_bash_preflight_current_major to a fixed synthetic value inside an
+# isolated subshell. This decouples the assertions from whichever Bash
+# interpreter actually runs this test file (e.g. a real Homebrew Bash 5 on
+# PATH), which would otherwise make talos_require_bash5 return early via its
+# own "already Bash 5+" short-circuit and skip the candidate/re-exec/
+# loop-guard logic entirely.
 
 marker_file="$(mktemp -t talos-preflight-marker.XXXXXX)"
 rm -f "${marker_file}"
 
 (
+  _talos_bash_preflight_current_major() { printf '%s\n' "3"; }
   _talos_bash_preflight_candidates() {
     printf '%s\n' "${FIXTURES_DIR}/fake-bash5"
   }
@@ -126,6 +135,7 @@ fi
 no_candidate_output=""
 no_candidate_status=0
 no_candidate_output="$(
+  _talos_bash_preflight_current_major() { printf '%s\n' "3"; }
   _talos_bash_preflight_candidates() {
     printf '%s\n' "${FIXTURES_DIR}/does-not-exist-bash"
   }
@@ -145,6 +155,7 @@ loop_guard_output=""
 loop_guard_status=0
 loop_guard_output="$(
   export TALOS_BASH_PREFLIGHT_REEXEC=1
+  _talos_bash_preflight_current_major() { printf '%s\n' "3"; }
   _talos_bash_preflight_candidates() {
     printf '%s\n' "${FIXTURES_DIR}/fake-bash5"
   }
@@ -156,6 +167,34 @@ if [[ "${loop_guard_output}" == *"loop"* ]]; then
   pass "re-exec loop guard message explains the refusal"
 else
   fail "re-exec loop guard message unclear: ${loop_guard_output}"
+fi
+
+# --- talos_require_bash5: host already reports Bash 5+ -> immediate no-op ---
+#
+# Regression for a host with a real Homebrew Bash 5 installed (as opposed to
+# the synthetic "major 3" scenarios above): talos_require_bash5 must return
+# 0 immediately without consulting candidates or re-execing anything.
+
+host_bash5_status=0
+host_bash5_marker="$(mktemp -t talos-preflight-host-marker.XXXXXX)"
+rm -f "${host_bash5_marker}"
+
+(
+  _talos_bash_preflight_current_major() { printf '%s\n' "5"; }
+  _talos_bash_preflight_candidates() {
+    echo "candidates should not be consulted when already on Bash 5+" >&2
+    printf '%s\n' "${FIXTURES_DIR}/fake-bash5"
+  }
+  export TALOS_PREFLIGHT_TEST_MARKER="${host_bash5_marker}"
+  talos_require_bash5 "/does/not/matter/entrypoint.sh"
+) || host_bash5_status=$?
+
+assert_eq "talos_require_bash5 no-ops on a host already reporting Bash 5+" "0" "${host_bash5_status}"
+if [[ -f "${host_bash5_marker}" ]]; then
+  fail "talos_require_bash5 re-execed even though the host already reports Bash 5+"
+  rm -f "${host_bash5_marker}"
+else
+  pass "talos_require_bash5 does not re-exec when the host already reports Bash 5+"
 fi
 
 echo ""

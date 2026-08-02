@@ -49,6 +49,15 @@ _talos_bash_preflight_version_major() {
   "${candidate}" -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null
 }
 
+# @description Prints the running interpreter's major Bash version. Extracted
+#   as its own function (rather than inlined) so fixture tests can override
+#   it in a subshell, the same way they override
+#   _talos_bash_preflight_candidates, without depending on which Bash the
+#   test harness itself happens to run under.
+_talos_bash_preflight_current_major() {
+  printf '%s\n' "${BASH_VERSINFO[0]:-0}"
+}
+
 # @description Verifies the running interpreter is Bash 5+. Re-execs the
 #   caller under a located Homebrew Bash 5 candidate, or exits with an
 #   actionable error. Never installs or modifies host configuration.
@@ -57,7 +66,8 @@ _talos_bash_preflight_version_major() {
 talos_require_bash5() {
   local self_path="$1"
   shift || true
-  local current_major="${BASH_VERSINFO[0]:-0}"
+  local current_major=""
+  current_major="$(_talos_bash_preflight_current_major)"
   local candidate=""
   local candidate_major=""
 
