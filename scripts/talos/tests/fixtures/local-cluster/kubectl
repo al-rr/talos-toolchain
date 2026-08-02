@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Test fixture only: stub kubectl CLI for scripts/talos/local-cluster.sh
+# Cilium-mode tests. Never talks to a real Kubernetes API server.
+set -euo pipefail
+
+if [[ -n "${STUB_KUBECTL_LOG:-}" ]]; then
+  printf '%s\n' "$*" >> "${STUB_KUBECTL_LOG}"
+fi
+
+if [[ "${STUB_KUBECTL_FAIL:-false}" == "true" ]]; then
+  echo "stub kubectl: forced failure" >&2
+  exit 1
+fi
+
+if [[ "$1" == "get" && "$2" == "namespace" ]]; then
+  # Namespace does not exist yet; caller will create it.
+  exit 1
+fi
+
+exit 0
