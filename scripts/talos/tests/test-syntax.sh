@@ -26,6 +26,7 @@ TARGETS=(
   "${TALOS_DIR}/govc/provision-cluster.sh"
   "${TALOS_DIR}/configure_load_balancer.sh"
   "${TALOS_DIR}/phase-network-bringup.sh"
+  "${TALOS_DIR}/validate-cilium-handoff.sh"
   "${TALOS_DIR}/vars.sh"
 )
 
@@ -51,6 +52,7 @@ SHELLCHECK_TARGETS=(
   "${TALOS_DIR}/local-cluster.sh"
   "${TALOS_DIR}/config.sh"
   "${TALOS_DIR}/talos-gitops.sh"
+  "${TALOS_DIR}/validate-cilium-handoff.sh"
 )
 
 if command -v shellcheck >/dev/null 2>&1; then

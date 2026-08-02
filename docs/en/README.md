@@ -33,4 +33,5 @@ same local-first boundary.
 - Shell requirements (Bash 5 / macOS preflight contract): `docs/en/shell-requirements.md`
 - Local Talos cluster (Docker/Colima, `local-cluster.sh`): `docs/en/local-cluster.md`
 - YAML style policy and local/CI lint check: `docs/en/yaml-style.md`
+- Cilium day-1/day-2 (Argo CD) handoff contract: `docs/en/cilium-gitops-handoff.md`
 - Cross-repository handoff: `provision-talos-vsphere/docs/en/cross-repo-handoff.md`

@@ -33,4 +33,5 @@ configuracao Talos por usuario se apoia neste mesmo limite local-first.
 - Requisitos de shell (contrato de preflight Bash 5 / macOS): `docs/pt-br/shell-requirements.md`
 - Cluster Talos local (Docker/Colima, `local-cluster.sh`): `docs/pt-br/local-cluster.md`
 - Politica de estilo YAML e checagem local/CI: `docs/pt-br/yaml-style.md`
+- Contrato de handoff Cilium day-1/day-2 (Argo CD): `docs/pt-br/cilium-gitops-handoff.md`
 - Handoff entre repositorios: `provision-talos-vsphere/docs/pt-br/cross-repo-handoff.md`
