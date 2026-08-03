@@ -14,6 +14,9 @@ if [[ "$1" == "status" ]]; then
     exit 1
   fi
   echo "stub colima: running"
+  if [[ -n "${STUB_COLIMA_DOCKER_SOCKET:-}" ]]; then
+    echo "docker: unix://${STUB_COLIMA_DOCKER_SOCKET}"
+  fi
   exit 0
 fi
 
