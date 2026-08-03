@@ -8,6 +8,10 @@ if [[ -n "${STUB_TALOSCTL_LOG:-}" ]]; then
   printf '%s\n' "$*" >> "${STUB_TALOSCTL_LOG}"
 fi
 
+if [[ "$1" == "cluster" && "$2" == "create" && "$3" == "docker" && -n "${STUB_TALOSCTL_LOG:-}" ]]; then
+  printf 'DOCKER_HOST=%s\n' "${DOCKER_HOST:-<unset>}" >> "${STUB_TALOSCTL_LOG}"
+fi
+
 if [[ "$1" == "cluster" && "$2" == "create" && "$3" == "docker" ]]; then
   # Mirrors the real talosctl behavior this correction works around: the
   # talosconfig is written early (well before the internal cluster-health

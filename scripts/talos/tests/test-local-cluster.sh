@@ -29,10 +29,6 @@ fail() {
 }
 
 TMP_ROOT="$(mktemp -d -t talos-local-cluster-test.XXXXXX)"
-cleanup() {
-  rm -rf "${TMP_ROOT}"
-}
-trap cleanup EXIT
 
 STATE_ROOT="${TMP_ROOT}/state-root"
 STUB_LOG_DIR="${TMP_ROOT}/logs"
@@ -42,10 +38,36 @@ mkdir -p "${STATE_ROOT}" "${STUB_LOG_DIR}"
 # anything real that might be installed on this host.
 export PATH="${FIXTURES_DIR}:${PATH}"
 
+# Deterministic Docker endpoint resolution regardless of the host's real
+# environment: no ambient DOCKER_HOST is allowed to leak in and short-circuit
+# the Colima-fallback tests below.
+unset DOCKER_HOST
+
+# A real (bound, unlistened) AF_UNIX socket file so require_valid_docker_socket
+# has a genuine socket to validate against, without any live Colima/Docker
+# process. Bind-and-close leaves the socket file node on disk. Created
+# directly under /tmp (not TMP_ROOT) because AF_UNIX paths are limited to
+# ~104 bytes on macOS/BSD and mktemp's default TMPDIR path is too long.
+FAKE_COLIMA_SOCKET="$(mktemp -u /tmp/talos-lc-test-XXXXXX.sock)"
+python3 - "${FAKE_COLIMA_SOCKET}" <<'PY'
+import socket
+import sys
+
+path = sys.argv[1]
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.bind(path)
+s.close()
+PY
+cleanup() {
+  rm -rf "${TMP_ROOT}" "${FAKE_COLIMA_SOCKET}"
+}
+trap cleanup EXIT
+
 run_local_cluster() {
   STUB_TALOSCTL_LOG="${STUB_LOG_DIR}/talosctl.log" \
   STUB_DOCKER_LOG="${STUB_LOG_DIR}/docker.log" \
   STUB_COLIMA_LOG="${STUB_LOG_DIR}/colima.log" \
+  STUB_COLIMA_DOCKER_SOCKET="${STUB_COLIMA_DOCKER_SOCKET-${FAKE_COLIMA_SOCKET}}" \
     "${LOCAL_CLUSTER_SH}" "$@"
 }
 
@@ -91,6 +113,87 @@ else
   fail "create --dry-run did not reference an isolated --talosconfig-destination path: ${output}"
 fi
 
+# --- Docker endpoint resolution: default Colima fallback is used ------------
+
+reset_logs
+status=0
+output="$(run_local_cluster create --name=endpoint-colima-fallback --state-root="${STATE_ROOT}" --dry-run 2>&1)" || status=$?
+if [[ "${status}" -eq 0 && "${output}" == *"DOCKER_HOST=unix://${FAKE_COLIMA_SOCKET}"* ]]; then
+  pass "create falls back to the validated Colima Docker socket when no explicit endpoint is configured"
+else
+  fail "create should resolve the Colima Docker socket by default: ${output}"
+fi
+
+# --- Docker endpoint resolution: --docker-endpoint takes precedence over Colima ---
+
+reset_logs
+status=0
+output="$(run_local_cluster create --name=endpoint-explicit-flag --state-root="${STATE_ROOT}" --docker-endpoint="tcp://127.0.0.1:2375" --dry-run 2>&1)" || status=$?
+if [[ "${status}" -eq 0 && "${output}" == *"DOCKER_HOST=tcp://127.0.0.1:2375"* ]]; then
+  pass "--docker-endpoint takes precedence over the Colima fallback"
+else
+  fail "--docker-endpoint should take precedence over Colima: ${output}"
+fi
+
+# --- Docker endpoint resolution: an explicit DOCKER_HOST env var takes precedence over Colima ---
+
+reset_logs
+status=0
+output="$(DOCKER_HOST="unix:///tmp/explicit-env.sock" run_local_cluster create --name=endpoint-explicit-env --state-root="${STATE_ROOT}" --dry-run 2>&1)" || status=$?
+if [[ "${status}" -eq 0 && "${output}" == *"DOCKER_HOST=unix:///tmp/explicit-env.sock"* ]]; then
+  pass "an explicit DOCKER_HOST env var takes precedence over the Colima fallback"
+else
+  fail "an explicit DOCKER_HOST should take precedence over Colima: ${output}"
+fi
+
+# --- Docker endpoint resolution: fails clearly when Colima is not running and no explicit endpoint is set ---
+
+reset_logs
+status=0
+output="$(STUB_COLIMA_STATUS_FAIL=true run_local_cluster create --name=endpoint-colima-down --state-root="${STATE_ROOT}" --dry-run 2>&1)" || status=$?
+if [[ "${status}" -ne 0 ]]; then
+  pass "create fails clearly when Colima is not running and no explicit endpoint is configured"
+else
+  fail "create should fail when Colima is down and no explicit endpoint is set: ${output}"
+fi
+if [[ ! -s "${STUB_LOG_DIR}/talosctl.log" ]]; then
+  pass "no stub talosctl call is made when Docker endpoint resolution fails (Colima down)"
+else
+  fail "a failed endpoint resolution must never reach talosctl: $(cat "${STUB_LOG_DIR}/talosctl.log")"
+fi
+
+# --- Docker endpoint resolution: fails clearly when Colima reports no Docker socket ---
+
+reset_logs
+status=0
+output="$(STUB_COLIMA_DOCKER_SOCKET="" run_local_cluster create --name=endpoint-no-socket-line --state-root="${STATE_ROOT}" --dry-run 2>&1)" || status=$?
+if [[ "${status}" -ne 0 ]]; then
+  pass "create fails clearly when Colima's status does not report a Docker socket"
+else
+  fail "create should fail when Colima reports no Docker socket: ${output}"
+fi
+if [[ ! -s "${STUB_LOG_DIR}/talosctl.log" ]]; then
+  pass "no stub talosctl call is made when Colima reports no Docker socket"
+else
+  fail "a missing Colima Docker socket line must never reach talosctl: $(cat "${STUB_LOG_DIR}/talosctl.log")"
+fi
+
+# --- Docker endpoint resolution: fails clearly when the resolved Colima socket does not exist on disk ---
+
+reset_logs
+status=0
+output="$(STUB_COLIMA_DOCKER_SOCKET="/tmp/talos-lc-test-does-not-exist.sock" run_local_cluster create --name=endpoint-missing-socket --state-root="${STATE_ROOT}" --dry-run 2>&1)" || status=$?
+if [[ "${status}" -ne 0 ]]; then
+  pass "create fails clearly when the resolved Colima Docker socket does not exist on disk"
+else
+  fail "create should fail when the resolved Colima socket file is missing: ${output}"
+fi
+if [[ ! -s "${STUB_LOG_DIR}/talosctl.log" ]]; then
+  pass "no stub talosctl call is made when the resolved Colima socket does not exist"
+else
+  fail "a nonexistent resolved Colima socket must never reach talosctl: $(cat "${STUB_LOG_DIR}/talosctl.log")"
+fi
+
 # --- create for real (stubbed talosctl/docker/colima): isolated paths, marker written ---
 
 reset_logs
@@ -120,6 +223,12 @@ if grep -q -- "--state ${cluster_dir}/talos-state" "${STUB_LOG_DIR}/talosctl.log
   pass "create (stubbed) passes an isolated --state path to talosctl"
 else
   fail "create (stubbed) talosctl invocation missing isolated --state path"
+fi
+
+if grep -q -- "DOCKER_HOST=unix://${FAKE_COLIMA_SOCKET}" "${STUB_LOG_DIR}/talosctl.log" 2>/dev/null; then
+  pass "create (stubbed) passes the resolved Colima Docker endpoint to the Talos Docker lifecycle command"
+else
+  fail "create (stubbed) did not pass the resolved Docker endpoint to talosctl: $(cat "${STUB_LOG_DIR}/talosctl.log" 2>/dev/null)"
 fi
 
 # --- create refuses a second time (marker already present) ---

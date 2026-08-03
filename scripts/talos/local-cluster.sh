@@ -34,6 +34,12 @@
 # @arg --gitops-repo-root path Local talos-vsphere-gitops checkout root.
 #   Required when --cni=cilium; must be on branch "lab" with a clean working
 #   tree. Never modified: this wrapper only reads its lab environment files.
+# @arg --docker-endpoint endpoint Explicit Docker endpoint (for example
+#   "unix:///var/run/docker.sock") passed to the Talos Docker lifecycle
+#   command for create. When omitted, an explicit `DOCKER_HOST` in the
+#   environment is used if set; otherwise a Colima Docker socket is resolved
+#   from `colima status` and validated before use. Create fails clearly if
+#   no endpoint can be resolved.
 # @flag --confirm-destroy Required to actually run destroy (not needed for --dry-run).
 # @flag --dry-run,-n Print actions without executing or mutating the host.
 # @flag --help,-h Show usage information.
@@ -76,6 +82,7 @@ CONFIRM_DESTROY="false"
 DRY_RUN="false"
 CNI_MODE="flannel"
 GITOPS_REPO_ROOT=""
+DOCKER_ENDPOINT_OVERRIDE=""
 
 MARKER_NAME=".talos-toolchain-local-cluster"
 GITOPS_LAB_ENVIRONMENT="lab"
@@ -112,6 +119,12 @@ Options:
   --gitops-repo-root=<path>  Local talos-vsphere-gitops checkout root.
                          Required with --cni=cilium; must be on branch "lab"
                          with a clean working tree. Read-only: never modified.
+  --docker-endpoint=<endpoint>  Explicit Docker endpoint for create (for
+                         example "unix:///var/run/docker.sock"). When
+                         omitted, an explicit DOCKER_HOST in the environment
+                         is used if set; otherwise a Colima Docker socket is
+                         resolved from "colima status" and validated. Create
+                         fails clearly if no endpoint can be resolved.
   --confirm-destroy      Required to actually run destroy (not required with --dry-run)
   -n, --dry-run          Print actions without executing or mutating the host
   -h, --help             Show this help
@@ -145,6 +158,7 @@ parse_args() {
       --workers=*) WORKERS="${1#*=}"; shift ;;
       --cni=*) CNI_MODE="${1#*=}"; shift ;;
       --gitops-repo-root=*) GITOPS_REPO_ROOT="${1#*=}"; shift ;;
+      --docker-endpoint=*) DOCKER_ENDPOINT_OVERRIDE="${1#*=}"; shift ;;
       --confirm-destroy) CONFIRM_DESTROY="true"; shift ;;
       -n|--dry-run) DRY_RUN="true"; shift ;;
       -h|--help) usage; exit 0 ;;
@@ -322,6 +336,69 @@ report_colima_state() {
 
 preflight_common() {
   talos_require_commands talosctl docker colima
+}
+
+# @description Extracts the Colima-managed Docker socket endpoint from
+#   `colima status` output (line format: "docker: unix:///path/to/docker.sock",
+#   optionally prefixed by a log-level tag such as "INFO[0000] "). Never
+#   starts, stops, or reconfigures Colima; a non-running or Docker-less
+#   Colima simply yields no match and the caller decides how to fail.
+colima_docker_socket_from_status() {
+  local status_output="$1"
+  local match=""
+  match="$(printf '%s\n' "${status_output}" | grep -oE 'docker:[[:space:]]*unix://[^[:space:]]+' | tail -n1 || true)"
+  [[ -n "${match}" ]] || return 1
+  match="${match#docker:}"
+  match="${match#"${match%%[![:space:]]*}"}"
+  printf '%s\n' "${match}"
+}
+
+# @description Rejects anything that is not a "unix://" socket URI, or whose
+#   underlying path does not currently exist as a real socket. Applied to a
+#   Colima-resolved endpoint before it is ever exported as DOCKER_HOST, so a
+#   stale or malformed Colima status line can never be handed to talosctl.
+require_valid_docker_socket() {
+  local endpoint="$1"
+  local socket_path=""
+  case "${endpoint}" in
+    unix://*) socket_path="${endpoint#unix://}" ;;
+    *) die "Resolved Colima Docker endpoint '${endpoint}' is not a 'unix://' socket URI." ;;
+  esac
+  [[ -S "${socket_path}" ]] || die "Resolved Colima Docker socket does not exist or is not a socket: ${socket_path}"
+}
+
+# @description Resolves the Docker endpoint for the Talos Docker lifecycle
+#   command: an explicit --docker-endpoint wins, then an explicit DOCKER_HOST
+#   already set in the environment, then a Colima Docker socket discovered
+#   from `colima status` and validated with require_valid_docker_socket.
+#   Never starts, stops, or reconfigures Colima/Docker; fails clearly (via
+#   die) when no usable endpoint can be resolved. Prints only the resolved
+#   endpoint on stdout (callers capture it via command substitution); all
+#   diagnostics go through die (stderr), never log_info (stdout), so nothing
+#   else is ever mixed into the captured value.
+resolve_docker_endpoint() {
+  if [[ -n "${DOCKER_ENDPOINT_OVERRIDE}" ]]; then
+    printf '%s\n' "${DOCKER_ENDPOINT_OVERRIDE}"
+    return 0
+  fi
+
+  if [[ -n "${DOCKER_HOST:-}" ]]; then
+    printf '%s\n' "${DOCKER_HOST}"
+    return 0
+  fi
+
+  local status_output=""
+  if ! status_output="$(colima status 2>&1)"; then
+    die "No explicit Docker endpoint is configured (--docker-endpoint or DOCKER_HOST) and Colima is not running (colima status failed). Start Colima yourself (for example: colima start) or pass --docker-endpoint, then re-run."
+  fi
+
+  local socket=""
+  if ! socket="$(colima_docker_socket_from_status "${status_output}")"; then
+    die "No explicit Docker endpoint is configured (--docker-endpoint or DOCKER_HOST) and Colima's status did not report a Docker socket. Start Colima's Docker runtime yourself or pass --docker-endpoint, then re-run."
+  fi
+
+  require_valid_docker_socket "${socket}"
+  printf '%s\n' "${socket}"
 }
 
 # @description Cilium-mode-only preflight: verifies the required additional
@@ -510,13 +587,15 @@ cilium_async_reap() {
 #   place for diagnostics and never attempts any destroy/cleanup. The
 #   default flannel path never calls this function and is unaffected.
 supervise_cilium_async_create() {
+  local docker_endpoint="$1"
+  shift
   local -a create_cmd=("$@")
   local create_log="${CLUSTER_DIR}/create.log"
   CILIUM_ASYNC_CREATE_PID=""
 
-  log_info "Creating local cluster '${CLUSTER_NAME}' (cilium mode, async): ${create_cmd[*]}"
+  log_info "Creating local cluster '${CLUSTER_NAME}' (cilium mode, async, DOCKER_HOST=${docker_endpoint}): ${create_cmd[*]}"
   log_info "talosctl output is being captured to ${create_log} while Cilium day-1 bootstraps concurrently."
-  "${create_cmd[@]}" > "${create_log}" 2>&1 &
+  DOCKER_HOST="${docker_endpoint}" "${create_cmd[@]}" > "${create_log}" 2>&1 &
   CILIUM_ASYNC_CREATE_PID=$!
 
   trap cilium_async_reap EXIT
@@ -581,6 +660,10 @@ do_create() {
     die "Cluster '${CLUSTER_NAME}' already has wrapper state at ${CLUSTER_DIR}. Run 'destroy --name=${CLUSTER_NAME}' first, or choose a different --name."
   fi
 
+  local docker_endpoint=""
+  docker_endpoint="$(resolve_docker_endpoint)"
+  log_info "Resolved Docker endpoint: ${docker_endpoint}"
+
   local create_cmd=(
     talosctl cluster create docker
     --name "${CLUSTER_NAME}"
@@ -603,7 +686,7 @@ do_create() {
 
   if [[ "${DRY_RUN}" == "true" ]]; then
     log_info "[DRY-RUN] mkdir -p ${TALOS_STATE_DIR}"
-    log_info "[DRY-RUN] ${create_cmd[*]}"
+    log_info "[DRY-RUN] DOCKER_HOST=${docker_endpoint} ${create_cmd[*]}"
     log_info "[DRY-RUN] ${kubeconfig_cmd[*]}"
     if [[ "${CNI_MODE}" == "cilium" ]]; then
       log_info "[DRY-RUN] docker port ${CLUSTER_NAME}-controlplane-1 ${CILIUM_API_PORT}/tcp"
@@ -616,10 +699,10 @@ do_create() {
 
   mkdir -p "${TALOS_STATE_DIR}"
   if [[ "${CNI_MODE}" == "cilium" ]]; then
-    supervise_cilium_async_create "${create_cmd[@]}"
+    supervise_cilium_async_create "${docker_endpoint}" "${create_cmd[@]}"
   else
-    log_info "Creating local cluster '${CLUSTER_NAME}': ${create_cmd[*]}"
-    "${create_cmd[@]}"
+    log_info "Creating local cluster '${CLUSTER_NAME}' (DOCKER_HOST=${docker_endpoint}): ${create_cmd[*]}"
+    DOCKER_HOST="${docker_endpoint}" "${create_cmd[@]}"
     log_info "Fetching isolated kubeconfig: ${kubeconfig_cmd[*]}"
     "${kubeconfig_cmd[@]}"
   fi

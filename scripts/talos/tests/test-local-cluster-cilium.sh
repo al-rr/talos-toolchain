@@ -31,10 +31,6 @@ fail() {
 }
 
 TMP_ROOT="$(mktemp -d -t talos-local-cluster-cilium-test.XXXXXX)"
-cleanup() {
-  rm -rf "${TMP_ROOT}"
-}
-trap cleanup EXIT
 
 STATE_ROOT="${TMP_ROOT}/state-root"
 STUB_LOG_DIR="${TMP_ROOT}/logs"
@@ -43,6 +39,31 @@ mkdir -p "${STATE_ROOT}" "${STUB_LOG_DIR}"
 # Fixtures first on PATH so the stub talosctl/docker/colima/helm/kubectl
 # always win over anything real that might be installed on this host.
 export PATH="${FIXTURES_DIR}:${PATH}"
+
+# Deterministic Docker endpoint resolution regardless of the host's real
+# environment: no ambient DOCKER_HOST is allowed to leak in and short-circuit
+# the Colima-fallback tests below.
+unset DOCKER_HOST
+
+# A real (bound, unlistened) AF_UNIX socket file so require_valid_docker_socket
+# has a genuine socket to validate against, without any live Colima/Docker
+# process. Bind-and-close leaves the socket file node on disk. Created
+# directly under /tmp (not TMP_ROOT) because AF_UNIX paths are limited to
+# ~104 bytes on macOS/BSD and mktemp's default TMPDIR path is too long.
+FAKE_COLIMA_SOCKET="$(mktemp -u /tmp/talos-lc-cilium-test-XXXXXX.sock)"
+python3 - "${FAKE_COLIMA_SOCKET}" <<'PY'
+import socket
+import sys
+
+path = sys.argv[1]
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.bind(path)
+s.close()
+PY
+cleanup() {
+  rm -rf "${TMP_ROOT}" "${FAKE_COLIMA_SOCKET}"
+}
+trap cleanup EXIT
 
 # --- build a real, throwaway GitOps checkout on branch "lab" ---------------
 
@@ -108,6 +129,7 @@ run_local_cluster() {
   STUB_COLIMA_LOG="${STUB_LOG_DIR}/colima.log" \
   STUB_HELM_LOG="${STUB_LOG_DIR}/helm.log" \
   STUB_KUBECTL_LOG="${STUB_LOG_DIR}/kubectl.log" \
+  STUB_COLIMA_DOCKER_SOCKET="${STUB_COLIMA_DOCKER_SOCKET-${FAKE_COLIMA_SOCKET}}" \
     "${LOCAL_CLUSTER_SH}" "$@"
 }
 
@@ -268,6 +290,12 @@ if grep -q "cni=cilium" "${cluster_dir}/.talos-toolchain-local-cluster" 2>/dev/n
   pass "create --cni=cilium (stubbed) records cni=cilium in the wrapper marker"
 else
   fail "wrapper marker did not record cni=cilium: $(cat "${cluster_dir}/.talos-toolchain-local-cluster" 2>/dev/null)"
+fi
+
+if grep -q -- "DOCKER_HOST=unix://${FAKE_COLIMA_SOCKET}" "${STUB_LOG_DIR}/talosctl.log" 2>/dev/null; then
+  pass "create --cni=cilium (stubbed) passes the resolved Colima Docker endpoint to the backgrounded Talos Docker lifecycle command"
+else
+  fail "create --cni=cilium (stubbed) did not pass the resolved Docker endpoint to talosctl: $(cat "${STUB_LOG_DIR}/talosctl.log" 2>/dev/null)"
 fi
 
 # --- published API port discovery failure: create fails, state is retained
