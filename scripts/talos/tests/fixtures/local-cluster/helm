@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Test fixture only: stub helm CLI for scripts/talos/local-cluster.sh
+# Cilium-mode tests. Never talks to a real Helm registry or cluster.
+set -euo pipefail
+
+if [[ -n "${STUB_HELM_LOG:-}" ]]; then
+  printf '%s\n' "$*" >> "${STUB_HELM_LOG}"
+fi
+
+if [[ "${STUB_HELM_FAIL:-false}" == "true" ]]; then
+  echo "stub helm: forced failure" >&2
+  exit 1
+fi
+
+if [[ "$1" == "template" ]]; then
+  echo "# stub helm template output"
+  exit 0
+fi
+
+exit 0

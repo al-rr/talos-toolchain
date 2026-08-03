@@ -16,4 +16,12 @@ if [[ "$1" == "info" ]]; then
   exit 0
 fi
 
+if [[ "$1" == "port" ]]; then
+  if [[ "${STUB_DOCKER_PORT_FAIL:-false}" == "true" ]]; then
+    exit 1
+  fi
+  echo "${STUB_DOCKER_PORT_MAPPING:-127.0.0.1:32768}"
+  exit 0
+fi
+
 exit 0

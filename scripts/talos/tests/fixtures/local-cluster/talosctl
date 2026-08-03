@@ -8,13 +8,67 @@ if [[ -n "${STUB_TALOSCTL_LOG:-}" ]]; then
   printf '%s\n' "$*" >> "${STUB_TALOSCTL_LOG}"
 fi
 
+if [[ "$1" == "cluster" && "$2" == "create" && "$3" == "docker" ]]; then
+  # Mirrors the real talosctl behavior this correction works around: the
+  # talosconfig is written early (well before the internal cluster-health
+  # wait), so a caller polling for it while this "create" is still running
+  # can already fetch a kubeconfig. STUB_TALOSCTL_CREATE_SLEEP_SECONDS
+  # simulates the long health wait (which never completes on its own while
+  # CNI is "none"); STUB_TALOSCTL_CREATE_DONE_FILE records when this
+  # simulated wait actually finished, so tests can prove ordering against
+  # it without relying on timing alone.
+  talosconfig_dest=""
+  prev_arg=""
+  for arg in "$@"; do
+    if [[ "${prev_arg}" == "--talosconfig-destination" ]]; then
+      talosconfig_dest="${arg}"
+    fi
+    prev_arg="${arg}"
+  done
+  if [[ -n "${talosconfig_dest}" ]]; then
+    : > "${talosconfig_dest}"
+  fi
+
+  if [[ "${STUB_TALOSCTL_CREATE_SLEEP_SECONDS:-0}" != "0" ]]; then
+    sleep "${STUB_TALOSCTL_CREATE_SLEEP_SECONDS}"
+  fi
+
+  if [[ -n "${STUB_TALOSCTL_CREATE_DONE_FILE:-}" ]]; then
+    : > "${STUB_TALOSCTL_CREATE_DONE_FILE}"
+  fi
+
+  if [[ "${STUB_TALOSCTL_CREATE_FAIL:-false}" == "true" ]]; then
+    echo "stub talosctl: forced create failure" >&2
+    exit 1
+  fi
+  exit 0
+fi
+
 if [[ "${STUB_TALOSCTL_FAIL:-false}" == "true" ]]; then
   echo "stub talosctl: forced failure" >&2
   exit 1
 fi
 
 if [[ "$1" == "kubeconfig" ]]; then
-  : > "$2"
+  # Mirrors the real talosctl behavior this iteration works around: the
+  # embedded server address is an internal Docker network IP, never a
+  # published host endpoint.
+  cat > "$2" <<'EOF_KUBECONFIG'
+apiVersion: v1
+kind: Config
+clusters:
+  - cluster:
+      server: https://10.5.0.2:6443
+    name: stub-cluster
+contexts:
+  - context:
+      cluster: stub-cluster
+      user: stub-user
+    name: stub-context
+current-context: stub-context
+users:
+  - name: stub-user
+EOF_KUBECONFIG
   exit 0
 fi
 

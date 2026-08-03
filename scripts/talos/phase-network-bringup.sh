@@ -5,12 +5,16 @@
 #   Renders, validates, and installs one addon from project helm manifests.
 #   Supports render-only mode and post-install validations for cluster checks.
 #
-# @arg --project-dir path Cluster project directory (required).
+# @arg --project-dir path Cluster project directory (required unless --helm-root is given).
 # @arg --vars-file path Optional vars file override.
 # @arg --local-vars-file path Optional local vars override.
 # @arg --cluster-name name Cluster name override.
 # @arg --addon name Addon name under helm/ (default: cilium).
-# @arg --kubeconfig path Kubeconfig path override.
+# @arg --kubeconfig path Kubeconfig path override (required with --helm-root).
+# @arg --helm-root path Helm manifest root to use directly instead of a vSphere
+#   project dir/vars file (for example a talos-vsphere-gitops
+#   environments/<env>/helm checkout). Mutually exclusive with --project-dir.
+# @arg --render-dir path Directory to render manifests into (required with --helm-root).
 # @arg --cilium-rollout-timeout duration Cilium rollout timeout when cilium CLI is unavailable.
 # @flag --render-only Render and validate only, skip install.
 # @flag --dry-run,-n Print actions without executing.
@@ -23,6 +27,11 @@
 # @example
 #   # Install Longhorn from project manifests
 #   ./phase-network-bringup.sh --project-dir=./clusters/talos-dev --addon=longhorn
+#
+# @example
+#   # Bring up Cilium directly from a GitOps helm root (no vSphere project dir)
+#   ./phase-network-bringup.sh --helm-root=../talos-vsphere-gitops/environments/lab/helm \
+#     --render-dir=/tmp/local-cilium/generated/helm --kubeconfig=/tmp/local-cilium/kubeconfig --addon=cilium
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -39,6 +48,8 @@ ADDON_NAME="cilium"
 DRY_RUN="false"
 RENDER_ONLY="false"
 KUBECONFIG_PATH=""
+HELM_ROOT=""
+RENDER_DIR_OVERRIDE=""
 CILIUM_ROLLOUT_TIMEOUT="300s"
 
 usage() {
@@ -52,12 +63,15 @@ Phase 2: Network Bring-up (Helm)
   4) post-install validations
 
 Options:
-  --project-dir=<path>           Cluster project dir (required)
+  --project-dir=<path>           Cluster project dir (required unless --helm-root is given)
   --vars-file=<path>             Optional vars override (default: <project>/vars.sh)
   --local-vars-file=<path>       Optional local vars override (default: <project>/vars.local.sh)
   --cluster-name=<name>          Cluster name override
   --addon=<name>                 Addon name under helm/ (default: cilium)
-  --kubeconfig=<path>            Kubeconfig path (default: <project>/generated/kubeconfig)
+  --kubeconfig=<path>            Kubeconfig path (default: <project>/generated/kubeconfig; required with --helm-root)
+  --helm-root=<path>             Use this helm manifest root directly instead of a vSphere
+                                  project dir/vars file. Mutually exclusive with --project-dir.
+  --render-dir=<path>            Render output directory (required with --helm-root)
   --cilium-rollout-timeout=<dur> Timeout for Cilium rollout wait when cilium CLI is unavailable (default: 300s)
   --render-only                  Stop before helm upgrade --install
   -n, --dry-run                  Print actions without executing
@@ -72,6 +86,10 @@ Examples:
 
   # Validate rendered addon resources without installing
   $(basename "$0") --project-dir=./clusters/talos-dev --addon=prometheus-stack --render-only
+
+  # Bring up Cilium directly from a GitOps helm root (no vSphere project dir)
+  $(basename "$0") --helm-root=../talos-vsphere-gitops/environments/lab/helm \\
+    --render-dir=/tmp/local-cilium/generated/helm --kubeconfig=/tmp/local-cilium/kubeconfig --addon=cilium
 EOF_USAGE
 }
 
@@ -84,6 +102,8 @@ parse_args() {
       --cluster-name=*) CLUSTER_NAME="${1#*=}"; shift ;;
       --addon=*) ADDON_NAME="${1#*=}"; shift ;;
       --kubeconfig=*) KUBECONFIG_PATH="${1#*=}"; shift ;;
+      --helm-root=*) HELM_ROOT="${1#*=}"; shift ;;
+      --render-dir=*) RENDER_DIR_OVERRIDE="${1#*=}"; shift ;;
       --cilium-rollout-timeout=*) CILIUM_ROLLOUT_TIMEOUT="${1#*=}"; shift ;;
       --render-only) RENDER_ONLY="true"; shift ;;
       -n|--dry-run) DRY_RUN="true"; shift ;;
@@ -250,21 +270,39 @@ main() {
   local ns=""
 
   parse_args "$@"
-  [[ -n "${PROJECT_DIR}" ]] || die "--project-dir is required."
-  project_dir_abs="$(resolve_repo_path "${PROJECT_DIR}")"
-  vars_file="${VARS_FILE:-${project_dir_abs}/vars.sh}"
-  local_vars_file="${LOCAL_VARS_FILE:-${project_dir_abs}/vars.local.sh}"
-  require_file "${vars_file}"
 
-  export OVERLAY_VARS_FILE="${vars_file}"
-  if [[ -f "${local_vars_file}" ]]; then
-    export OVERLAY_LOCAL_VARS_FILE="${local_vars_file}"
+  if [[ -n "${HELM_ROOT}" ]]; then
+    [[ -z "${PROJECT_DIR}" ]] || die "--helm-root and --project-dir are mutually exclusive."
+    [[ -n "${KUBECONFIG_PATH}" ]] || die "--kubeconfig is required with --helm-root."
+    [[ -n "${RENDER_DIR_OVERRIDE}" ]] || die "--render-dir is required with --helm-root."
+
+    helm_dir="$(resolve_repo_path "${HELM_ROOT}")"
+    [[ -d "${helm_dir}" ]] || die "--helm-root not found: ${helm_dir}"
+    CLUSTER_NAME="${CLUSTER_NAME:-local}"
+    cluster_dir=""
+    kubeconfig_file="$(resolve_repo_path "${KUBECONFIG_PATH}")"
+    render_dir="$(resolve_repo_path "${RENDER_DIR_OVERRIDE}")/${ADDON_NAME}"
+  else
+    [[ -n "${PROJECT_DIR}" ]] || die "--project-dir is required (or use --helm-root)."
+    project_dir_abs="$(resolve_repo_path "${PROJECT_DIR}")"
+    vars_file="${VARS_FILE:-${project_dir_abs}/vars.sh}"
+    local_vars_file="${LOCAL_VARS_FILE:-${project_dir_abs}/vars.local.sh}"
+    require_file "${vars_file}"
+
+    export OVERLAY_VARS_FILE="${vars_file}"
+    if [[ -f "${local_vars_file}" ]]; then
+      export OVERLAY_LOCAL_VARS_FILE="${local_vars_file}"
+    fi
+    load_overlay_vars "lab"
+
+    CLUSTER_NAME="${CLUSTER_NAME:-${TALOS_CLUSTER_NAME:-$(basename "${project_dir_abs}")}}"
+    cluster_dir="${project_dir_abs}"
+    helm_dir="${cluster_dir}/helm"
+    kubeconfig_file="${KUBECONFIG_PATH:-${cluster_dir}/generated/kubeconfig}"
+    kubeconfig_file="$(resolve_repo_path "${kubeconfig_file}")"
+    render_dir="${cluster_dir}/generated/helm/${ADDON_NAME}"
   fi
-  load_overlay_vars "lab"
 
-  CLUSTER_NAME="${CLUSTER_NAME:-${TALOS_CLUSTER_NAME:-$(basename "${project_dir_abs}")}}"
-  cluster_dir="${project_dir_abs}"
-  helm_dir="${cluster_dir}/helm"
   addon_dir="${helm_dir}/${ADDON_NAME}"
   release_file="${addon_dir}/release.yaml"
 
@@ -290,10 +328,6 @@ main() {
     die "Could not resolve valuesFile '${values_file}' from ${release_file}"
   require_file "${values_file}"
 
-  kubeconfig_file="${KUBECONFIG_PATH:-${cluster_dir}/generated/kubeconfig}"
-  kubeconfig_file="$(resolve_repo_path "${kubeconfig_file}")"
-
-  render_dir="${cluster_dir}/generated/helm/${ADDON_NAME}"
   render_file="${render_dir}/rendered.yaml"
 
   log_info "Phase 2/1: helm template (mandatory)"

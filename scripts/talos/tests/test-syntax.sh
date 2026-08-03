@@ -28,6 +28,7 @@ TARGETS=(
   "${TALOS_DIR}/phase-network-bringup.sh"
   "${TALOS_DIR}/validate-cilium-handoff.sh"
   "${TALOS_DIR}/vars.sh"
+  "${TALOS_DIR}/tests/test-local-cluster-cilium.sh"
 )
 
 FAIL_COUNT=0

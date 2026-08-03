@@ -26,6 +26,8 @@ entrypoint separado do `cluster.sh`, voltado ao vSphere:
 - `talosctl`, o CLI do Docker e o CLI do Colima no `PATH`.
 - Um daemon Docker respondendo. `create` e `status` verificam isso com
   `docker info` e nunca tentam iniciar ou configurar o Docker.
+- `--cni=cilium` exige adicionalmente `helm`, `kubectl` e `git` no `PATH`
+  (veja [Modo local Cilium](#modo-local-cilium) abaixo).
 
 ## Layout de estado
 
@@ -72,6 +74,94 @@ offline; nao e necessario no uso normal do operador). Nomes contendo `..` ou
   criado, nenhuma marca e escrita ou usada para uma decisao destrutiva, e
   nenhum comando externo e executado.
 
+## Modo local Cilium
+
+`create --cni=cilium --gitops-repo-root=<path>` substitui o Flannel
+gerenciado pelo Talos por padrao por um bootstrap local deliberado do
+Cilium no dia-1, usando exatamente a identidade e os values do release
+`lab` do `talos-vsphere-gitops` ja cobertos por
+`validate-cilium-handoff.sh`. Isso resolve uma falha real no runtime Linux
+do Colima: os pods do Flannel gerenciado quebram la porque
+`/proc/sys/net/bridge/bridge-nf-call-iptables` esta ausente, o que deixa o
+CoreDNS incapaz de criar seu sandbox.
+
+```bash
+./scripts/talos/local-cluster.sh create --name=dev --cni=cilium \
+  --gitops-repo-root=../talos-vsphere-gitops --dry-run
+./scripts/talos/local-cluster.sh create --name=dev --cni=cilium \
+  --gitops-repo-root=../talos-vsphere-gitops
+```
+
+O que este modo faz, em ordem:
+
+1. **Preflight do GitOps** (somente leitura, sem interacao com Colima/Docker):
+   verifica que `--gitops-repo-root` e um checkout Git no branch `lab` com
+   arvore de trabalho limpa, e que `environments/lab/helm/cilium/release.yaml`
+   e `environments/lab/argocd/apps/cilium.yaml` existem. Nunca modifica esse
+   checkout.
+2. **CNI do Talos desabilitado, create roda em segundo plano**: `talosctl
+   cluster create docker` e invocado com um `--config-patch` que define
+   `cluster.network.cni.name` como `none`. O backend Docker nao expoe um
+   equivalente a `--wait=false`, e sua espera interna de prontidao bloqueia
+   ate o Kubernetes/CoreDNS ficar saudavel — o que nunca aconteceria sozinho
+   com CNI `none`. Por isso, somente no modo `--cni=cilium`, esse comando e
+   iniciado em segundo plano (sua saida capturada em
+   `<diretorio-do-cluster>/create.log`) enquanto o wrapper executa as etapas
+   3–6 abaixo simultaneamente, terminando com um `wait` sobre ele na etapa
+   7. O modo padrao (`--cni=flannel`, ou sem `--cni`) continua executando
+   `talosctl cluster create docker` de forma sincrona, totalmente
+   inalterado.
+3. **Busca do kubeconfig, com novas tentativas**: `talosctl kubeconfig` e
+   tentado repetidamente (a cada 3s, por ate 120s) contra o cluster ainda em
+   inicializacao ate que a API do Talos responda, ja que ela pode nao estar
+   acessivel no instante logo apos o comando de create em segundo plano
+   iniciar.
+4. **Publicacao da API em loopback**: a porta da API Kubernetes do container
+   de control plane e publicada em uma porta de host `127.0.0.1` atribuida
+   dinamicamente (`--host-ip 127.0.0.1 --exposed-ports 0:6443/tcp`), depois
+   descoberta via `docker port` (verificado por ate 60s) assim que o
+   container esta em execucao.
+5. **Reescrita do kubeconfig isolado**: o `kubeconfig` isolado do proprio
+   wrapper (nunca o `~/.kube/config` padrao do operador) tem seu campo
+   `server:` reescrito do endereco interno da rede Docker que o `talosctl
+   kubeconfig` embutiria (por exemplo `10.5.0.2:6443`) para o endpoint
+   descoberto `127.0.0.1:<porta-publicada>`.
+6. **Bootstrap do Cilium dia-1**: `validate-cilium-handoff.sh` roda contra o
+   mesmo checkout GitOps antes de qualquer instalacao (como o Cilium do
+   dia-1 aqui le `environments/lab/helm/cilium/{release,values}.yaml`
+   diretamente desse checkout, nao uma copia sincronizada, essa
+   correspondencia de identidade e estrutural, nao apenas provavel);
+   depois `phase-network-bringup.sh --helm-root=<checkout
+   gitops>/environments/lab/helm --addon=cilium` (a mesma fase Helm usada
+   para clusters vSphere, em seu novo modo sem arquivo de vars de projeto)
+   renderiza, valida com dry-run server-side, e executa `helm upgrade
+   --install` do Cilium; entao o wrapper aguarda o `deployment/coredns` em
+   `kube-system` concluir o rollout. E isso que permite que a espera de
+   saude do comando de create em segundo plano (etapa 2) consiga ter
+   sucesso.
+7. **Espera e propagacao do resultado do create em segundo plano**: somente
+   depois que Cilium/CoreDNS forem confirmados saudaveis o wrapper executa
+   `wait` sobre o processo `talosctl cluster create docker` em segundo
+   plano e propaga seu status de saida real — sucesso apenas se esse
+   processo tambem terminar com `0`. Em `SIGINT`/`SIGTERM` a qualquer
+   momento durante as etapas 3–7, o wrapper encerra e faz o reap (espera
+   pela finalizacao) desse processo em segundo plano antes de sair com
+   status diferente de zero, em vez de deixa-lo orfao.
+
+A adocao GitOps de dia-2 (Argo CD assumindo a reconciliacao do Cilium via
+`talos-gitops.sh`) permanece inalterada e fora do escopo deste wrapper; este
+modo executa apenas o bootstrap imperativo de dia-1.
+
+Em caso de falha em qualquer etapa (incluindo uma interrupcao), nada e
+destruido automaticamente: o estado de Talos/Cilium que existir e mantido,
+junto com `<diretorio-do-cluster>/create.log` capturando a propria saida do
+create em segundo plano (veja "Recuperando um cluster criado parcialmente"
+abaixo), e a marca do wrapper so e escrita depois que todas as etapas acima
+tiverem sucesso e o processo de create em segundo plano tiver sido
+finalizado (reaped) — assim, um `create --cni=cilium` parcialmente falho
+nunca e confundido com um completo, e nenhum processo `talosctl` fica
+rodando sem supervisao.
+
 ## Limitacoes conhecidas
 
 - Apenas Marco A: `--workers` e configuravel, mas o backend Docker do Talos
@@ -81,9 +171,11 @@ offline; nao e necessario no uso normal do operador). Nomes contendo `..` ou
   qualquer valor diferente de `1` antes de acionar o talosctl, em vez de
   ignora-lo silenciosamente. Nao ha upgrade, escalonamento ou orquestracao
   multi-cluster alem de `--name`s independentes.
-- Este wrapper nao gerencia Cilium, Argo CD ou qualquer bootstrap GitOps;
-  isso continua sendo territorio de `talos-vsphere-gitops` / `talos-gitops.sh`
-  para clusters nao locais, e esta fora do escopo do backend Docker aqui.
+- Fora do modo `--cni=cilium`, este wrapper nao gerencia Cilium, Argo CD ou
+  qualquer bootstrap GitOps; isso continua sendo territorio de
+  `talos-vsphere-gitops` / `talos-gitops.sh` para clusters nao locais.
+  `--cni=cilium` executa apenas o bootstrap local de dia-1 descrito acima —
+  nunca toca no Argo CD nem no estado desejado do checkout GitOps.
 - Se o Colima for o backend Docker pretendido e nao estiver rodando, o
   preflight `docker info` do `create` falhara com uma mensagem acionavel;
   inicie o Colima voce mesmo e execute novamente.
@@ -97,6 +189,9 @@ nenhuma limpeza ou nova tentativa automatica. A recuperacao e manual:
 
 1. Execute `status --name=<name>` para ver que estado existe (marca do
    wrapper, diretorio de estado do Talos, saida de `talosctl cluster show`).
+   Para `--cni=cilium`, verifique tambem
+   `.../local-clusters/<name>/create.log`, a saida capturada do processo
+   `talosctl cluster create docker` em segundo plano.
 2. Se a marca do wrapper em
    `.../local-clusters/<name>/.talos-toolchain-local-cluster` estiver
    presente, `destroy --name=<name> --confirm-destroy` ira destruir o
