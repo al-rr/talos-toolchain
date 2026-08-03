@@ -358,9 +358,15 @@ preflight_cilium_mode() {
 # @description Cluster-wide Talos machine-config patch disabling the managed
 #   CNI so Cilium day-1 owns pod networking instead of Flannel. Applied via
 #   --config-patch (all node types) so it never depends on which of the
-#   Docker backend's single control-plane / N worker nodes is patched.
+#   Docker backend's single control-plane / N worker nodes is patched. Uses a
+#   strategic-merge YAML patch (a plain document, not a JSON6902 op list):
+#   Talos v1.13.7 rejects JSON6902 against the multi-document machine
+#   configuration that `talosctl cluster create docker` now generates
+#   ("JSON6902 patches are not supported for multi-document machine
+#   configuration"), while the strategic-merge form is merged into the
+#   matching v1alpha1Config document and is accepted.
 cilium_cni_none_config_patch() {
-  printf '%s' '[{"op":"replace","path":"/cluster/network/cni","value":{"name":"none"}}]'
+  printf 'cluster:\n  network:\n    cni:\n      name: none\n'
 }
 
 # @description Polls `docker port` for the published host mapping of the

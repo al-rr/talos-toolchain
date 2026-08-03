@@ -205,10 +205,10 @@ if [[ "${status}" -eq 0 ]]; then
 else
   fail "create --cni=cilium --dry-run should exit 0 (got ${status}): ${output}"
 fi
-if [[ "${output}" == *'"cni":"none"'* || "${output}" == *'"name":"none"'* ]]; then
-  pass "create --cni=cilium --dry-run plans a CNI-none config-patch"
+if [[ "${output}" == *"name: none"* && "${output}" != *'"op":"replace"'* ]]; then
+  pass "create --cni=cilium --dry-run plans a strategic-merge CNI-none config-patch (not JSON6902)"
 else
-  fail "create --cni=cilium --dry-run did not preview a CNI-none config-patch: ${output}"
+  fail "create --cni=cilium --dry-run did not preview the expected strategic-merge CNI-none config-patch: ${output}"
 fi
 if [[ "${output}" == *"--host-ip 127.0.0.1"* && "${output}" == *"--exposed-ports 0:6443/tcp"* ]]; then
   pass "create --cni=cilium --dry-run publishes the Kubernetes API on a loopback host port"
