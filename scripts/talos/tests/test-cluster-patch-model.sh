@@ -103,7 +103,7 @@ fi
 
 PROJECT_DIR="${TMP_ROOT}/clusters/test-cluster"
 status=0
-output="$("${CLUSTER_SH}" create-project --project-dir="${PROJECT_DIR}" 2>&1)" || status=$?
+output="$("${CLUSTER_SH}" create-project --project-dir="${PROJECT_DIR}" --talos-version=v1.13.7 2>&1)" || status=$?
 if [[ "${status}" -eq 0 ]]; then
   pass "create-project exits 0 against the stub Factory endpoint"
 else
@@ -142,7 +142,7 @@ EDITED_SUM="$(cksum < "${PROJECT_DIR}/patches/cni.patch.yaml")"
 rm -f "${PROJECT_DIR}/patches/worker.patch.yaml"
 
 status=0
-output="$("${CLUSTER_SH}" create-project --project-dir="${PROJECT_DIR}" 2>&1)" || status=$?
+output="$("${CLUSTER_SH}" create-project --project-dir="${PROJECT_DIR}" --talos-version=v1.13.7 2>&1)" || status=$?
 if [[ "${status}" -eq 0 ]]; then
   pass "create-project is safe to re-run over an existing project"
 else
@@ -169,7 +169,7 @@ cp -R "${REPO_ROOT}/scripts" "${BROKEN_ROOT}/scripts"
 # deliberately no cluster-patches/ directory
 status=0
 output="$("${BROKEN_ROOT}/scripts/talos/cluster.sh" create-project \
-  --project-dir="${TMP_ROOT}/clusters/no-model" 2>&1)" || status=$?
+  --project-dir="${TMP_ROOT}/clusters/no-model" --talos-version=v1.13.7 2>&1)" || status=$?
 if [[ "${status}" -ne 0 && "${output}" == *"Patch model directory not found"* ]]; then
   pass "a missing cluster-patches/ directory fails create-project with a clear message"
 else
@@ -180,7 +180,7 @@ fi
 
 DRY_PROJECT="${TMP_ROOT}/clusters/dry-cluster"
 status=0
-output="$("${CLUSTER_SH}" create-project --project-dir="${DRY_PROJECT}" --dry-run 2>&1)" || status=$?
+output="$("${CLUSTER_SH}" create-project --project-dir="${DRY_PROJECT}" --talos-version=v1.13.7 --dry-run 2>&1)" || status=$?
 if [[ "${status}" -eq 0 && ! -d "${DRY_PROJECT}" ]]; then
   pass "create-project --dry-run creates no project directory"
 else
