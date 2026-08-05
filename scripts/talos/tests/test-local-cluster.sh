@@ -124,6 +124,25 @@ else
   fail "create should resolve the Colima Docker socket by default: ${output}"
 fi
 
+# Real Colima prints the socket inside a logfmt line ('msg="docker socket:
+# unix://..."'), not as a bare 'docker: <uri>' field. Both styles must parse,
+# and the captured path must never swallow the quote that closes the msg=
+# field -- a parser that only handled the bare form failed against the real
+# binary while every stubbed test still passed.
+reset_logs
+status=0
+output="$(STUB_COLIMA_STATUS_FORMAT=plain run_local_cluster create --name=endpoint-colima-plain --state-root="${STATE_ROOT}" --dry-run 2>&1)" || status=$?
+if [[ "${status}" -eq 0 && "${output}" == *"DOCKER_HOST=unix://${FAKE_COLIMA_SOCKET}"* ]]; then
+  pass "create also resolves the Colima Docker socket from the plainer 'docker: <uri>' status form"
+else
+  fail "create should resolve the Colima socket from the plain status form too: ${output}"
+fi
+if [[ "${output}" != *"${FAKE_COLIMA_SOCKET}\""* ]]; then
+  pass "the resolved Colima socket path never includes the logfmt closing quote"
+else
+  fail "the resolved Colima socket path captured a trailing quote: ${output}"
+fi
+
 # --- Docker endpoint resolution: --docker-endpoint takes precedence over Colima ---
 
 reset_logs

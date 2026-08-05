@@ -7,6 +7,20 @@ if [[ -n "${STUB_KUBECTL_LOG:-}" ]]; then
   printf '%s\n' "$*" >> "${STUB_KUBECTL_LOG}"
 fi
 
+# The Kubernetes API /readyz gate. Talos disables anonymous auth, so this is
+# probed with the cluster's own kubeconfig via kubectl rather than an
+# unauthenticated curl -- an unauthenticated probe gets 401 forever, however
+# ready the control plane is. STUB_KUBECTL_READYZ_FAIL simulates an API that
+# never becomes ready, so the gate's failure path stays covered.
+if [[ "$1" == "get" && "$2" == "--raw=/readyz" ]]; then
+  if [[ "${STUB_KUBECTL_READYZ_FAIL:-false}" == "true" ]]; then
+    echo "stub kubectl: the server is currently unable to handle the request" >&2
+    exit 1
+  fi
+  echo "ok"
+  exit 0
+fi
+
 if [[ "${STUB_KUBECTL_FAIL:-false}" == "true" ]]; then
   echo "stub kubectl: forced failure" >&2
   exit 1

@@ -65,6 +65,7 @@ set -euo pipefail
 
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/lib/bash-preflight.sh"
@@ -93,7 +94,32 @@ CILIUM_API_HOST_IP="127.0.0.1"
 CILIUM_API_PORT_WAIT_SECONDS="${TALOS_LOCAL_CLUSTER_API_PORT_WAIT_SECONDS:-60}"
 # Overridable only for the offline test suite, for the same reason as above.
 CILIUM_KUBECONFIG_FETCH_WAIT_SECONDS="${TALOS_LOCAL_CLUSTER_KUBECONFIG_FETCH_WAIT_SECONDS:-120}"
+# The /readyz gate's budget has to cover far more than "kube-apiserver
+# starts". The Docker port mapping is published when the container is created,
+# so this countdown begins long before the cluster is bootstrapped, and the
+# API cannot answer 200 until the whole chain completes: Talos API up ->
+# `talosctl cluster create docker` runs its bootstrap step -> etcd converges
+# to Running -> kube-apiserver serves. On a laptop that is minutes, not
+# seconds. A 60s budget cut this off mid-bootstrap, while etcd was still
+# "Preparing", and reported a timeout for a cluster that was coming up
+# normally. Overridable for the offline test suite, which must not sleep
+# through a real timeout to exercise the failure path.
+CILIUM_API_READYZ_WAIT_SECONDS="${TALOS_LOCAL_CLUSTER_API_READYZ_WAIT_SECONDS:-600}"
+# How often to log that the gate is still waiting, so a multi-minute, silent
+# but healthy bootstrap is not mistaken for a hang.
+CILIUM_API_READYZ_PROGRESS_SECONDS="${TALOS_LOCAL_CLUSTER_API_READYZ_PROGRESS_SECONDS:-30}"
 CILIUM_COREDNS_ROLLOUT_TIMEOUT="180s"
+
+# The shared Talos machine-config patch model -- the same one cluster.sh
+# create-project materializes. There is exactly one copy of these defaults in
+# the repository; see cluster-patches/README.md.
+#
+# This backend consumes the subset that is meaningful on Docker: the per-node
+# static-network patches and longhorn.patch.yaml have no Docker equivalent
+# (Docker assigns addresses on its own subnet, and there is no second block
+# device to partition).
+PATCH_MODEL_DIR="${REPO_ROOT}/cluster-patches"
+PATCH_FILE_NAMES=(cni.patch.yaml cp.patch.yaml worker.patch.yaml)
 
 usage() {
   cat <<EOF_USAGE
@@ -241,6 +267,13 @@ set_cluster_paths() {
   TALOSCONFIG_PATH="${CLUSTER_DIR}/talosconfig"
   KUBECONFIG_PATH="${CLUSTER_DIR}/kubeconfig"
   MARKER_FILE="${CLUSTER_DIR}/${MARKER_NAME}"
+  # The materialized per-cluster patch project (--cni=cilium only). It lives
+  # beside talos-state/ so a cluster's machine-config inputs and its Talos
+  # state are destroyed together and can never outlive each other.
+  CLUSTER_PATCH_DIR="${CLUSTER_DIR}/patches"
+  CLUSTER_CNI_PATCH="${CLUSTER_PATCH_DIR}/cni.patch.yaml"
+  CLUSTER_CP_PATCH="${CLUSTER_PATCH_DIR}/cp.patch.yaml"
+  CLUSTER_WORKER_PATCH="${CLUSTER_PATCH_DIR}/worker.patch.yaml"
 }
 
 # @description Defense in depth: refuse to touch a resolved cluster
@@ -308,6 +341,10 @@ require_state_tree_safe() {
   require_file_safe_if_present "${TALOSCONFIG_PATH}" "talosconfig"
   require_file_safe_if_present "${KUBECONFIG_PATH}" "kubeconfig"
   require_file_safe_if_present "${MARKER_FILE}" "Wrapper marker"
+  require_dir_safe_if_present "${CLUSTER_PATCH_DIR}" "Cluster patch directory"
+  require_file_safe_if_present "${CLUSTER_CNI_PATCH}" "Cluster CNI patch"
+  require_file_safe_if_present "${CLUSTER_CP_PATCH}" "Cluster control-plane patch"
+  require_file_safe_if_present "${CLUSTER_WORKER_PATCH}" "Cluster worker patch"
 }
 
 # @description Diagnostic-only Docker daemon reachability check. Never
@@ -346,11 +383,17 @@ preflight_common() {
 colima_docker_socket_from_status() {
   local status_output="$1"
   local match=""
-  match="$(printf '%s\n' "${status_output}" | grep -oE 'docker:[[:space:]]*unix://[^[:space:]]+' | tail -n1 || true)"
+  # Real Colima reports the socket inside a logfmt line on stderr:
+  #   time="..." level=info msg="docker socket: unix:///path/to/docker.sock"
+  # Plainer "docker: unix:///path/to/docker.sock" output is also accepted, so
+  # this keeps working across Colima's output styles. The trailing character
+  # class excludes the double quote that closes the logfmt msg= field, which
+  # would otherwise be captured as part of the socket path.
+  match="$(printf '%s\n' "${status_output}" \
+    | grep -oE 'docker([[:space:]]+socket)?:[[:space:]]*unix://[^[:space:]"]+' \
+    | tail -n1 || true)"
   [[ -n "${match}" ]] || return 1
-  match="${match#docker:}"
-  match="${match#"${match%%[![:space:]]*}"}"
-  printf '%s\n' "${match}"
+  printf 'unix://%s\n' "${match#*unix://}"
 }
 
 # @description Rejects anything that is not a "unix://" socket URI, or whose
@@ -401,9 +444,62 @@ resolve_docker_endpoint() {
   printf '%s\n' "${socket}"
 }
 
+# @description Validates that the maintained default patch model
+#   (cni/cp/worker) exists and every file is a safe, readable regular file
+#   before any of it is copied to a destination or passed to talosctl. This
+#   model is the sole source of truth for a new cluster's --cni=cilium
+#   machine-config patches; nothing here is generated from an inline string.
+require_patch_template_project() {
+  local name=""
+  for name in "${PATCH_FILE_NAMES[@]}"; do
+    require_file_safe_if_present "${PATCH_MODEL_DIR}/${name}" "default patch model ${name}"
+    require_file "${PATCH_MODEL_DIR}/${name}"
+  done
+}
+
+# @description Materializes the default patch model into this cluster's own
+#   destination patch project, so `--name=<anything>` yields a per-cluster,
+#   operator-editable copy of the Cilium-focused defaults rather than sharing
+#   one directory inside the toolchain checkout.
+#
+#   An existing destination file is never overwritten. That is the whole point
+#   of materializing: once a cluster's patches exist, they are that cluster's
+#   record of what was applied, and re-running create must not silently
+#   discard an operator's edits. This mirrors cluster.sh create-project's
+#   scaffold-if-absent contract. Destroying the cluster removes them along
+#   with the rest of the cluster directory.
+#
+#   Copies are literal, with only a provenance header prepended: no template
+#   language, no variable substitution, so what lands in the destination is
+#   byte-identical machine-config YAML that an operator can diff against the
+#   model and hand-edit without learning a templating syntax.
+materialize_cluster_patch_project() {
+  local name=""
+  local src=""
+  local dest=""
+
+  mkdir -p "${CLUSTER_PATCH_DIR}"
+  for name in "${PATCH_FILE_NAMES[@]}"; do
+    src="${PATCH_MODEL_DIR}/${name}"
+    dest="${CLUSTER_PATCH_DIR}/${name}"
+    if [[ -f "${dest}" ]]; then
+      log_info "Keeping existing patch ${dest} (not overwritten by the default model)."
+      continue
+    fi
+    {
+      printf '# Generated by local-cluster.sh create --name=%s from\n' "${CLUSTER_NAME}"
+      printf '# %s\n' "${src}"
+      printf '# Edit freely: re-running create never overwrites this file.\n'
+      cat "${src}"
+    } > "${dest}"
+    log_info "Materialized ${dest} from the default patch model."
+  done
+}
+
 # @description Cilium-mode-only preflight: verifies the required additional
-#   local tools (helm, kubectl, git) are present and that the GitOps repo
-#   root is a checkout on branch "lab" with a clean working tree, without
+#   local tools (helm, kubectl, git) are present, that the maintained
+#   default patch model is intact, and that the GitOps repo root
+#   is a checkout on branch "lab" with a clean working tree, without
 #   starting/reconfiguring Colima or mutating the GitOps checkout in any way.
 preflight_cilium_mode() {
   local gitops_root="$1"
@@ -412,6 +508,7 @@ preflight_cilium_mode() {
   local dirty=""
 
   talos_require_commands helm kubectl git
+  require_patch_template_project
 
   [[ -d "${gitops_root}" ]] || die "--gitops-repo-root not found: ${gitops_root}"
   resolved_root="$(cd "${gitops_root}" && pwd)"
@@ -430,20 +527,6 @@ preflight_cilium_mode() {
   require_file "${resolved_root}/environments/${GITOPS_LAB_ENVIRONMENT}/argocd/apps/cilium.yaml"
 
   RESOLVED_GITOPS_REPO_ROOT="${resolved_root}"
-}
-
-# @description Cluster-wide Talos machine-config patch disabling the managed
-#   CNI so Cilium day-1 owns pod networking instead of Flannel. Applied via
-#   --config-patch (all node types) so it never depends on which of the
-#   Docker backend's single control-plane / N worker nodes is patched. Uses a
-#   strategic-merge YAML patch (a plain document, not a JSON6902 op list):
-#   Talos v1.13.7 rejects JSON6902 against the multi-document machine
-#   configuration that `talosctl cluster create docker` now generates
-#   ("JSON6902 patches are not supported for multi-document machine
-#   configuration"), while the strategic-merge form is merged into the
-#   matching v1alpha1Config document and is accepted.
-cilium_cni_none_config_patch() {
-  printf 'cluster:\n  network:\n    cni:\n      name: none\n'
 }
 
 # @description Polls `docker port` for the published host mapping of the
@@ -465,6 +548,51 @@ wait_for_published_api_port() {
     waited=$((waited + 2))
   done
 
+  return 1
+}
+
+# @description Polls the Kubernetes API server's `/readyz` endpoint, using the
+#   isolated kubeconfig this same create already fetched, until it reports
+#   "ok" or a bounded timeout elapses.
+#
+#   The probe must be authenticated. Talos runs kube-apiserver with anonymous
+#   authentication disabled, so an unauthenticated request to /readyz is
+#   answered with HTTP 401 no matter how ready the cluster is. An earlier
+#   version of this gate probed with `curl -k` and waited for HTTP 200: it sat
+#   through its entire budget watching 401s on a control plane that was fully
+#   ready, then reported a timeout. Going through kubectl with the cluster's
+#   own credentials both fixes that and reads real readiness rather than
+#   inferring it from "something answered".
+#
+#   A published Docker port mapping only proves the container's port is
+#   forwarded; it says nothing about whether kube-apiserver inside it has
+#   finished starting. In practice this waits out the entire bootstrap chain
+#   (Talos API -> cluster bootstrap -> etcd Running -> kube-apiserver), which
+#   is why the budget is minutes and why progress is logged along the way.
+#   Cilium day-1 must never begin installing before this gate passes, even
+#   though CNI is "none" and no pod networking exists yet (the API server
+#   itself does not depend on CNI).
+wait_for_kubernetes_api_readyz() {
+  local kubeconfig_file="$1"
+  local waited=0
+  local probe_output=""
+  local next_progress="${CILIUM_API_READYZ_PROGRESS_SECONDS}"
+
+  while (( waited < CILIUM_API_READYZ_WAIT_SECONDS )); do
+    if probe_output="$(KUBECONFIG="${kubeconfig_file}" kubectl get --raw=/readyz 2>&1)" \
+       && [[ "${probe_output}" == *ok* ]]; then
+      log_info "Kubernetes API reported /readyz=ok after ${waited}s."
+      return 0
+    fi
+    sleep 2
+    waited=$((waited + 2))
+    if (( CILIUM_API_READYZ_PROGRESS_SECONDS > 0 && waited >= next_progress )); then
+      log_info "Still waiting for the Kubernetes API /readyz gate (${waited}s of ${CILIUM_API_READYZ_WAIT_SECONDS}s). Talos is still bootstrapping etcd/kube-apiserver; this normally takes minutes."
+      next_progress=$((next_progress + CILIUM_API_READYZ_PROGRESS_SECONDS))
+    fi
+  done
+
+  log_error "Last /readyz probe result: ${probe_output:-<none>}"
   return 1
 }
 
@@ -519,14 +647,30 @@ bootstrap_cilium_day1() {
     return 0
   fi
 
+  # Every step below is checked explicitly rather than relying on `set -e`.
+  # This function is invoked as `if ! bootstrap_cilium_day1 ...`, and Bash
+  # disables errexit for the whole body of a function called in a condition
+  # context. Without these guards a failing Helm render or install did not
+  # abort: execution fell through to the CoreDNS wait, which then failed with
+  # "deployments.apps \"coredns\" not found" and became the reported cause,
+  # burying the real error further up the log.
   log_info "Validating Cilium day-1/day-2 GitOps handoff before install: ${validate_cmd[*]}"
-  "${validate_cmd[@]}"
+  if ! "${validate_cmd[@]}"; then
+    log_error "Cilium day-1/day-2 GitOps handoff validation failed; nothing was installed."
+    return 1
+  fi
 
   log_info "Bootstrapping Cilium day-1 from GitOps '${GITOPS_LAB_ENVIRONMENT}' checkout: ${bringup_cmd[*]}"
-  "${bringup_cmd[@]}"
+  if ! "${bringup_cmd[@]}"; then
+    log_error "Cilium day-1 network bring-up failed; not waiting for CoreDNS, which cannot roll out without pod networking."
+    return 1
+  fi
 
   log_info "Waiting for CoreDNS rollout to confirm cluster networking is healthy."
-  KUBECONFIG="${kubeconfig_file}" kubectl -n kube-system rollout status deployment/coredns --timeout="${CILIUM_COREDNS_ROLLOUT_TIMEOUT}"
+  if ! KUBECONFIG="${kubeconfig_file}" kubectl -n kube-system rollout status deployment/coredns --timeout="${CILIUM_COREDNS_ROLLOUT_TIMEOUT}"; then
+    log_error "CoreDNS did not roll out within ${CILIUM_COREDNS_ROLLOUT_TIMEOUT} even though Cilium day-1 reported success."
+    return 1
+  fi
 }
 
 # @description Retries a kubeconfig-fetch command until it succeeds or a
@@ -620,6 +764,12 @@ supervise_cilium_async_create() {
   log_info "Discovered published Kubernetes API endpoint: ${published_host}:${published_port}"
   rewrite_kubeconfig_server_endpoint "${KUBECONFIG_PATH}" "${published_host}" "${published_port}"
 
+  log_info "Waiting for the Kubernetes API /readyz gate at https://${published_host}:${published_port}/readyz before starting Cilium day-1."
+  if ! wait_for_kubernetes_api_readyz "${KUBECONFIG_PATH}"; then
+    die "Timed out after ${CILIUM_API_READYZ_WAIT_SECONDS}s waiting for the Kubernetes API /readyz gate at https://${published_host}:${published_port}/readyz. Check ${create_log} for the bootstrap/etcd progress before assuming a real failure; a slow control plane can be given more time with TALOS_LOCAL_CLUSTER_API_READYZ_WAIT_SECONDS. State was left in place for diagnostics."
+  fi
+  log_info "Kubernetes API /readyz gate passed; starting Cilium day-1 bootstrap."
+
   if ! bootstrap_cilium_day1 "${RESOLVED_GITOPS_REPO_ROOT}" "${KUBECONFIG_PATH}" "${CLUSTER_NAME}"; then
     die "Cilium day-1 bootstrap failed; state was left in place for diagnostics (see ${create_log} and 'status --name=${CLUSTER_NAME}')."
   fi
@@ -673,7 +823,9 @@ do_create() {
   )
   if [[ "${CNI_MODE}" == "cilium" ]]; then
     create_cmd+=(
-      --config-patch "$(cilium_cni_none_config_patch)"
+      --config-patch "@${CLUSTER_CNI_PATCH}"
+      --config-patch-controlplanes "@${CLUSTER_CP_PATCH}"
+      --config-patch-workers "@${CLUSTER_WORKER_PATCH}"
       --host-ip "${CILIUM_API_HOST_IP}"
       --exposed-ports "0:${CILIUM_API_PORT}/tcp"
     )
@@ -685,12 +837,19 @@ do_create() {
   )
 
   if [[ "${DRY_RUN}" == "true" ]]; then
+    if [[ "${CNI_MODE}" == "cilium" ]]; then
+      local template_name=""
+      for template_name in "${PATCH_FILE_NAMES[@]}"; do
+        log_info "[DRY-RUN] materialize ${CLUSTER_PATCH_DIR}/${template_name} from ${PATCH_MODEL_DIR}/${template_name} (existing file would be kept)"
+      done
+    fi
     log_info "[DRY-RUN] mkdir -p ${TALOS_STATE_DIR}"
     log_info "[DRY-RUN] DOCKER_HOST=${docker_endpoint} ${create_cmd[*]}"
     log_info "[DRY-RUN] ${kubeconfig_cmd[*]}"
     if [[ "${CNI_MODE}" == "cilium" ]]; then
       log_info "[DRY-RUN] docker port ${CLUSTER_NAME}-controlplane-1 ${CILIUM_API_PORT}/tcp"
       log_info "[DRY-RUN] rewrite ${KUBECONFIG_PATH} server endpoint to the published host:port"
+      log_info "[DRY-RUN] wait for Kubernetes API /readyz on the published host:port before Cilium day-1"
       bootstrap_cilium_day1 "${RESOLVED_GITOPS_REPO_ROOT}" "${KUBECONFIG_PATH}" "${CLUSTER_NAME}"
     fi
     log_info "[DRY-RUN] write marker ${MARKER_FILE}"
@@ -699,6 +858,7 @@ do_create() {
 
   mkdir -p "${TALOS_STATE_DIR}"
   if [[ "${CNI_MODE}" == "cilium" ]]; then
+    materialize_cluster_patch_project
     supervise_cilium_async_create "${docker_endpoint}" "${create_cmd[@]}"
   else
     log_info "Creating local cluster '${CLUSTER_NAME}' (DOCKER_HOST=${docker_endpoint}): ${create_cmd[*]}"

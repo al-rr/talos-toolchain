@@ -15,7 +15,17 @@ if [[ "$1" == "status" ]]; then
   fi
   echo "stub colima: running"
   if [[ -n "${STUB_COLIMA_DOCKER_SOCKET:-}" ]]; then
-    echo "docker: unix://${STUB_COLIMA_DOCKER_SOCKET}"
+    # Mirrors real Colima, which reports the socket inside a logfmt line
+    # rather than as a bare "docker: <uri>" field. An earlier stub emitted
+    # only the bare form, which let a parser that could not read real Colima
+    # output pass the whole suite. STUB_COLIMA_STATUS_FORMAT=plain still
+    # exercises the plainer form so both stay covered.
+    if [[ "${STUB_COLIMA_STATUS_FORMAT:-logfmt}" == "plain" ]]; then
+      echo "docker: unix://${STUB_COLIMA_DOCKER_SOCKET}"
+    else
+      echo "time=\"2026-01-01T00:00:00+00:00\" level=info msg=\"runtime: docker\""
+      echo "time=\"2026-01-01T00:00:00+00:00\" level=info msg=\"docker socket: unix://${STUB_COLIMA_DOCKER_SOCKET}\""
+    fi
   fi
   exit 0
 fi

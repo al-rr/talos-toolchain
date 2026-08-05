@@ -13,7 +13,21 @@ if [[ "${STUB_HELM_FAIL:-false}" == "true" ]]; then
 fi
 
 if [[ "$1" == "template" ]]; then
+  # Mirrors real Helm rendering an OCI chart (the canonical Cilium release
+  # uses oci://quay.io/cilium/charts/cilium): the pull progress goes to
+  # stdout, ahead of the manifest. Left unfiltered those two lines parse as a
+  # leading YAML document with no apiVersion/kind and the mandatory
+  # server-side dry-run rejects the whole render. The stub emits them so that
+  # filtering stays covered offline instead of only failing against the real
+  # registry.
+  if [[ "${STUB_HELM_OCI_CHATTER:-true}" == "true" ]]; then
+    echo "Pulled: quay.io/cilium/charts/cilium:1.19.1"
+    echo "Digest: sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  fi
+  echo "---"
   echo "# stub helm template output"
+  echo "apiVersion: v1"
+  echo "kind: Namespace"
   exit 0
 fi
 

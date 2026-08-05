@@ -26,8 +26,8 @@ the vSphere-oriented `cluster.sh`:
 - `talosctl`, the Docker CLI, and the Colima CLI on `PATH`.
 - A responsive Docker daemon. `create` and `status` check this with
   `docker info` and never attempt to start or configure Docker.
-- `--cni=cilium` additionally requires `helm`, `kubectl`, and `git` on `PATH`
-  (see [Cilium local mode](#cilium-local-mode) below).
+- `--cni=cilium` additionally requires `helm`, `kubectl`, `git`, and `curl` on
+  `PATH` (see [Cilium local mode](#cilium-local-mode) below).
 
 ## State layout
 
@@ -91,24 +91,101 @@ CoreDNS unable to create its sandbox.
   --gitops-repo-root=../talos-vsphere-gitops
 ```
 
-What this mode does, in order:
+### The default patch model and the per-cluster patch project
+
+`--cni=cilium`'s machine-config patches are never an inline, hand-authored
+string. They come from a maintained, Cilium-focused default model in the
+toolchain checkout:
+
+```text
+scripts/talos/local-cluster-patches/defaults/
+├── cni.patch.yaml      # all node types (--config-patch)
+├── cp.patch.yaml       # control-plane only (--config-patch-controlplanes)
+└── worker.patch.yaml   # workers only (--config-patch-workers)
+```
+
+That model is never applied in place. `create --name=<name> --cni=cilium`
+materializes a copy into the destination cluster directory, and hands
+`talosctl` the destination paths — so every cluster name gets its own
+editable patch project:
+
+```text
+~/.local/state/talos-toolchain/local-clusters/<name>/
+├── patches/            # this cluster's own machine-config inputs
+│   ├── cni.patch.yaml
+│   ├── cp.patch.yaml
+│   └── worker.patch.yaml
+├── talos-state/
+├── talosconfig
+├── kubeconfig
+└── create.log
+```
+
+An existing destination file is **never overwritten**. Once a cluster's
+patches exist they are that cluster's record of what was applied, so
+re-running `create` reports `Keeping existing patch ...` and leaves operator
+edits intact — the same scaffold-if-absent contract `cluster.sh
+create-project` uses. `destroy` removes them with the rest of the cluster
+directory. Copies are literal, with only a provenance header prepended: no
+template language and no variable substitution, so what lands in the
+destination is machine-config YAML you can diff against the model and
+hand-edit directly.
+
+The file names mirror the `talos-dev` reference project's vocabulary
+(`cni`/`cp`/`worker`) so one name means the same thing in both flows. They are
+the subset of `talos-dev`'s patches that is meaningful on the Docker backend:
+its per-node static-network patches and its Longhorn disk patch have no Docker
+equivalent, since Docker assigns addresses on its own subnet and there is no
+second block device to partition.
+
+The role-scoped flag names are plural because that is what the Docker backend
+accepts. `talosctl cluster create docker` takes
+`--config-patch-controlplanes` / `--config-patch-workers`, while `talosctl gen
+config` takes the singular `--config-patch-control-plane` /
+`--config-patch-worker`. The two subcommands do not share the spelling, and
+passing the `gen config` form here makes the real binary exit with `unknown
+flag` before a single container is created.
+
+`cni.patch.yaml` sets `cluster.network.cni.name` to `none` and disables the
+managed kube-proxy (`cluster.proxy.disabled: true`), so Cilium owns both pod
+networking and service load-balancing from day 1 instead of racing or
+conflicting with the managed defaults. `cp.patch.yaml` and
+`worker.patch.yaml` carry the per-role host-DNS overrides used while
+Cilium/CoreDNS are still coming up. All of this is local to `talos-toolchain`
+and its isolated state directory: it is never read from, or written into,
+`talos-dev` or any `provision-talos-vsphere`/VMware path, and it only ever
+applies in `--cni=cilium` mode — the default `--cni=flannel` mode never
+materializes a patch project and never emits any of these flags.
+
+### Two-stage lifecycle, in order
+
+This is a deliberate two-stage sequence: Stage 1 disables the managed CNI and
+kube-proxy before Talos bootstraps so Cilium can claim the cluster
+uncontested; Stage 2 gates the Cilium/Helm install on genuine Kubernetes API
+readiness, not just a Docker port mapping, and only then validates
+Cilium/CoreDNS.
 
 1. **GitOps preflight** (read-only, no Colima/Docker interaction): verifies
    `--gitops-repo-root` is a Git checkout on branch `lab` with a clean
    working tree, and that its `environments/lab/helm/cilium/release.yaml`
    and `environments/lab/argocd/apps/cilium.yaml` exist. It never modifies
    this checkout.
-2. **Talos CNI disabled, create runs in the background**: `talosctl cluster
-   create docker` is invoked with a `--config-patch` that sets
-   `cluster.network.cni.name` to `none`. The Docker backend exposes no
-   `--wait=false` equivalent, and its internal readiness wait blocks until
+2. **Stage 1 — patch project materialized, Talos CNI and kube-proxy disabled
+   before bootstrap, create runs in the background**: the default model is
+   materialized into `<cluster-dir>/patches/` (existing files kept), then
+   `talosctl cluster create docker` is invoked with that cluster's own
+   `cni.patch.yaml` (via `--config-patch @<cluster-dir>/patches/cni.patch.yaml`),
+   `cp.patch.yaml` (via `--config-patch-controlplanes`), and
+   `worker.patch.yaml` (via
+   `--config-patch-workers`). The Docker backend exposes no `--wait=false`
+   equivalent, and its internal readiness wait blocks until
    Kubernetes/CoreDNS is healthy — which can never happen on its own while
    CNI is `none`. So in `--cni=cilium` mode only, this command is started in
    the background (its output captured to `<cluster-dir>/create.log`) while
-   the wrapper performs steps 3–6 below concurrently, ending with a `wait`
-   on it in step 7. Default (`--cni=flannel`, or no `--cni` at all) still
+   the wrapper performs steps 3–7 below concurrently, ending with a `wait`
+   on it in step 8. Default (`--cni=flannel`, or no `--cni` at all) still
    runs `talosctl cluster create docker` synchronously, completely
-   unchanged.
+   unchanged, and never references the `talos-lab` patch project.
 3. **Kubeconfig fetch, retried**: `talosctl kubeconfig` is retried (every 3s,
    up to 120s) against the still-booting cluster until the Talos API
    answers, since it may not be reachable in the instant after the
@@ -122,22 +199,55 @@ What this mode does, in order:
    rewritten from the internal Docker network address `talosctl kubeconfig`
    would otherwise embed (for example `10.5.0.2:6443`) to the discovered
    `127.0.0.1:<published-port>` endpoint.
-6. **Cilium day-1 bootstrap**: `validate-cilium-handoff.sh` runs against the
-   same GitOps checkout before anything is installed (because Cilium day-1
-   here reads `environments/lab/helm/cilium/{release,values}.yaml` directly
-   from that checkout, not a synced copy, this identity match is
-   structural, not just probable); then `phase-network-bringup.sh
-   --helm-root=<gitops checkout>/environments/lab/helm --addon=cilium` (the
-   same Helm phase used for vSphere clusters, in its new project-vars-free
-   mode) renders, server-side dry-run validates, and `helm upgrade
-   --install`s Cilium; then the wrapper waits for `deployment/coredns` in
-   `kube-system` to finish rolling out. This is what makes the backgrounded
-   create command's own health wait (step 2) able to succeed at all.
-7. **Wait for and propagate the backgrounded create's result**: only after
+6. **Stage 2 gate — Kubernetes API `/readyz`**: a published Docker port
+   mapping only proves the container's port is forwarded, not that
+   `kube-apiserver` inside it has actually finished starting. Before
+   anything Cilium-related runs, the wrapper polls `/readyz` (every 2s, up to
+   600s) with the isolated kubeconfig it just fetched —
+   `KUBECONFIG=<cluster-dir>/kubeconfig kubectl get --raw=/readyz` — until it
+   reports `ok`. This works even though CNI is still `none` and no pod
+   networking exists yet, because the API server itself does not depend on
+   CNI. On timeout, `create` fails and no Helm action is ever attempted.
+
+   The probe must be authenticated. Talos runs `kube-apiserver` with
+   anonymous authentication disabled, so an unauthenticated request to
+   `/readyz` is answered `401` no matter how ready the cluster is. An earlier
+   version of this gate used `curl -k` and waited for HTTP `200`: it sat
+   through its whole budget watching `401`s on a control plane that was
+   already fully ready, then reported a timeout. Probing through `kubectl`
+   with the cluster's own credentials both fixes that and reads real
+   readiness instead of inferring it from "something answered".
+
+   The budget is minutes, not seconds, on purpose. The Docker port mapping is
+   published when the container is created, so this countdown starts long
+   before the cluster is bootstrapped: the gate is really waiting out the
+   whole chain — Talos API up, `talosctl cluster create docker` running its
+   bootstrap step, etcd converging to `Running`, and only then
+   `kube-apiserver` serving. A local control plane routinely takes five
+   minutes or more to get there. Progress is logged every 30s so a healthy
+   but silent bootstrap is not mistaken for a hang, and
+   `TALOS_LOCAL_CLUSTER_API_READYZ_WAIT_SECONDS` raises the budget on slower
+   hosts. If this gate does time out, read `<cluster-dir>/create.log` before
+   assuming a real failure — a line like `waiting for etcd to be healthy: ...
+   current state [Preparing]` followed by `context canceled` means the
+   cluster was still coming up normally and simply ran out of budget.
+7. **Cilium day-1 bootstrap**: only after the `/readyz` gate passes,
+   `validate-cilium-handoff.sh` runs against the same GitOps checkout before
+   anything is installed (because Cilium day-1 here reads
+   `environments/lab/helm/cilium/{release,values}.yaml` directly from that
+   checkout, not a synced copy, this identity match is structural, not just
+   probable); then `phase-network-bringup.sh --helm-root=<gitops
+   checkout>/environments/lab/helm --addon=cilium` (the same Helm phase used
+   for vSphere clusters, in its project-vars-free mode) renders, server-side
+   dry-run validates, and `helm upgrade --install`s Cilium; then the wrapper
+   waits for `deployment/coredns` in `kube-system` to finish rolling out.
+   This is what makes the backgrounded create command's own health wait
+   (step 2) able to succeed at all.
+8. **Wait for and propagate the backgrounded create's result**: only after
    Cilium/CoreDNS are confirmed healthy does the wrapper `wait` on the
    backgrounded `talosctl cluster create docker` process and propagate its
    real exit status — success only if that process also exits `0`. On
-   `SIGINT`/`SIGTERM` at any point during steps 3–7, the wrapper terminates
+   `SIGINT`/`SIGTERM` at any point during steps 3–8, the wrapper terminates
    and reaps that backgrounded process before exiting non-zero, instead of
    leaving it orphaned.
 
