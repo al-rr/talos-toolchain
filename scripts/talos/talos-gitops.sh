@@ -52,7 +52,9 @@ EXCLUDE_ADDONS_RAW=""
 SYSTEM_EXCLUDE_ADDONS_RAW="cilium"
 KUBECONFIG_PATH=""
 KUBE_CONTEXT=""
-CILIUM_ROLLOUT_TIMEOUT="300s"
+# See phase-network-bringup.sh for the measurement behind this default: on a
+# cold image cache the Cilium image pulls, not Cilium itself, set the duration.
+CILIUM_ROLLOUT_TIMEOUT="900s"
 DRY_RUN="false"
 KNOWN_WARNINGS_REGEX='(Warning: unrecognized format "int64"|warnings\.go:[0-9]+] "Warning: unrecognized format \\"int64\\"")'
 
@@ -75,7 +77,9 @@ Options:
   --exclude-addons=<list>        CSV/JSON-like addons to skip in install-platform-helm (merged with system excludes)
   --kubeconfig=<path>            Kubeconfig path override (default: KUBECONFIG or ~/.kube/config)
   --kube-context=<name>          Kubernetes context to execute against (required)
-  --cilium-rollout-timeout=<dur> Timeout for Cilium rollout wait when cilium CLI is unavailable (default: 300s)
+  --cilium-rollout-timeout=<dur> Timeout for Cilium rollout wait when cilium CLI is unavailable (default: 900s).
+                         Sized for a cold image cache; expiry is a timeout,
+                         not a failed install.
   -n, --dry-run                  Print actions without executing
   -h, --help                     Show help
 
@@ -511,7 +515,7 @@ install_single_addon() {
       else
         log_warn "cilium CLI not found; waiting daemonset/cilium rollout via kubectl (${CILIUM_ROLLOUT_TIMEOUT})"
         if ! KUBECONFIG="${kubeconfig_file}" kubectl --context="${KUBE_CONTEXT}" -n "${namespace}" rollout status daemonset/cilium --timeout="${CILIUM_ROLLOUT_TIMEOUT}"; then
-          log_warn "Cilium rollout timed out; continue monitoring manually."
+          log_warn "Cilium rollout not ready within ${CILIUM_ROLLOUT_TIMEOUT}. This is a timeout, not a failure: on a cold image cache the pulls can take longer. Check pod status before treating it as broken, and raise --cilium-rollout-timeout if this host is consistently slow."
         fi
       fi
     fi

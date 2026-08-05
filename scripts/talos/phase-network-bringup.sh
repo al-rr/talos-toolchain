@@ -50,7 +50,12 @@ RENDER_ONLY="false"
 KUBECONFIG_PATH=""
 HELM_ROOT=""
 RENDER_DIR_OVERRIDE=""
-CILIUM_ROLLOUT_TIMEOUT="300s"
+# Cold-cache image pulls dominate this wait, not Cilium's own startup. A
+# measured local run pulled ~1.5 GB across six images concurrently through one
+# Colima VM; the operator alone reported totalImagesPullingTime 9m42s. At 300s
+# the wait expired with everything still healthy and merely pulling, which
+# reads as a failure to an operator. 900s covers a cold pull with margin.
+CILIUM_ROLLOUT_TIMEOUT="900s"
 
 usage() {
   cat <<EOF_USAGE
@@ -72,7 +77,9 @@ Options:
   --helm-root=<path>             Use this helm manifest root directly instead of a vSphere
                                   project dir/vars file. Mutually exclusive with --project-dir.
   --render-dir=<path>            Render output directory (required with --helm-root)
-  --cilium-rollout-timeout=<dur> Timeout for Cilium rollout wait when cilium CLI is unavailable (default: 300s)
+  --cilium-rollout-timeout=<dur> Timeout for Cilium rollout wait when cilium CLI is unavailable (default: 900s).
+                         Sized for a cold image cache; expiry is a timeout,
+                         not a failed install.
   --render-only                  Stop before helm upgrade --install
   -n, --dry-run                  Print actions without executing
   -h, --help                     Show help
@@ -476,7 +483,7 @@ main() {
       log_warn "cilium CLI not found; skipping 'cilium status --wait'."
       log_info "Waiting for DaemonSet/cilium rollout via kubectl (timeout: ${CILIUM_ROLLOUT_TIMEOUT})."
       if ! KUBECONFIG="${kubeconfig_file}" kubectl -n "${namespace}" rollout status daemonset/cilium --timeout="${CILIUM_ROLLOUT_TIMEOUT}"; then
-        log_warn "Cilium rollout not ready before timeout; continue monitoring with the commands below."
+        log_warn "Cilium rollout not ready within ${CILIUM_ROLLOUT_TIMEOUT}. This is a timeout, not a failure: on a cold image cache the Cilium images can take longer to pull. Check the pod status below before treating it as broken, and raise --cilium-rollout-timeout if this host is consistently slow."
       fi
     fi
   fi
