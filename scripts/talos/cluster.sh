@@ -17,6 +17,11 @@
 # @arg sync-access action Sync local kubectl and talosctl access.
 # @arg refresh-schematics action Refresh schematic IDs and image vars.
 #
+# @arg --environment name Environment whose values and credentials this cluster
+#   reads. Resolution order: this flag, the project's own cluster.environment,
+#   then "lab". A cluster and its environment are separate identities: several
+#   clusters share one environment, so this is never derived from the cluster
+#   name.
 # @arg --project-dir path Cluster project directory.
 # @arg --vars-file path Explicit vars file (advanced mode).
 # @arg --local-vars-file path Optional local override vars file.
@@ -84,6 +89,9 @@ TALOS_VERSION=""
 CP_SCHEMATIC_FILE=""
 WORKER_SCHEMATIC_FILE=""
 CONFIG_ENVIRONMENT=""
+# The environment a cluster belongs to when neither --environment nor the
+# project's own cluster.environment says otherwise.
+DEFAULT_CONFIG_ENVIRONMENT="lab"
 UPDATE_OVA_FROM_SCHEMATIC="true"
 FORCE_GENERATE="false"
 DRY_RUN="false"
@@ -115,7 +123,9 @@ Options:
   --talos-version=<version>       Talos version for image tags (example: v1.12.4)
   --cp-schematic-file=<path>      CP schematic file (default: <project>/schematic.cp.yaml)
   --worker-schematic-file=<path>  Worker schematic file (default: <project>/schematic.worker.yaml, fallback schematic.yaml)
-  --environment=<name>            XDG YAML config environment name (default: project/cluster name)
+  --environment=<name>            Environment whose values and credentials this cluster reads.
+                                  Falls back to the project's cluster.environment, then "lab".
+                                  Several clusters may share one environment.
   --force-generate                Force regeneration of Talos config files
   --no-update-ova                 Do not rewrite TALOS_OVA_PATH during refresh-schematics
   -n, --dry-run                   Print actions without executing
@@ -427,6 +437,7 @@ materialize_patch_model() {
 create_project_scaffold() {
   local project_dir="$1"
   local cluster_name="$2"
+  local cluster_environment="$3"
   local project_abs=""
 
   if [[ "${project_dir}" = /* ]]; then
@@ -598,8 +609,15 @@ EOF_LOCAL
 # Tracked, non-secret project intent (committed). Secrets belong in the XDG
 # environment credentials file managed by config.sh, never here.
 # See docs/en/environment-config.md for the field reference.
+#
+# "environment" is which environment's shared values and credentials this
+# cluster reads -- not the cluster's own identity. Several clusters normally
+# share one: a container-backed cluster and a vSphere cluster with 3 control
+# planes, 3 workers and HAProxy can both declare "lab" and read the same
+# endpoints, networks and credentials.
 cluster:
   name: "${cluster_name}"
+  environment: "${cluster_environment}"
 EOF_PROJECT_CONFIG
   fi
 
@@ -709,9 +727,25 @@ main() {
   fi
 
   if [[ "${ACTION}" != "create-project" ]]; then
-    [[ -n "${CONFIG_ENVIRONMENT}" ]] || CONFIG_ENVIRONMENT="${CLUSTER_NAME:-default}"
+    local project_config_file=""
+    [[ -n "${project_abs}" && -f "${project_abs}/config.yaml" ]] && project_config_file="${project_abs}/config.yaml"
+
+    # A cluster and the environment it runs in are different things. Several
+    # clusters share one environment: cluster-lab (containers) and
+    # cluster-lab-vmware (vSphere, 3cp/3wk, HAProxy) both read lab's values
+    # and credentials. So the environment is never derived from the cluster
+    # name -- doing that sent every cluster looking for an environment named
+    # after itself, and silently found none.
+    #
+    # Resolution order, highest first: the --environment flag for a one-run
+    # override, then the project's own declared cluster.environment, then lab.
+    if [[ -z "${CONFIG_ENVIRONMENT}" && -n "${project_config_file}" ]]; then
+      CONFIG_ENVIRONMENT="$(talos_config_read_field "${project_config_file}" "cluster.environment")"
+    fi
+    [[ -n "${CONFIG_ENVIRONMENT}" ]] || CONFIG_ENVIRONMENT="${DEFAULT_CONFIG_ENVIRONMENT}"
     talos_config_require_valid_env_name "${CONFIG_ENVIRONMENT}"
     talos_config_require_yq
+    log_info "Using environment '${CONFIG_ENVIRONMENT}' for cluster '${CLUSTER_NAME:-<unnamed>}'."
 
     # Legacy vars.sh/vars.local.sh are a compatibility layer only: source them
     # first so the YAML environment/credentials layers loaded afterward always
@@ -727,8 +761,6 @@ main() {
       source "${LOCAL_VARS_FILE}"
     fi
 
-    local project_config_file=""
-    [[ -n "${project_abs}" && -f "${project_abs}/config.yaml" ]] && project_config_file="${project_abs}/config.yaml"
     talos_config_load "${CONFIG_ENVIRONMENT}" "${project_config_file}"
   fi
 
@@ -738,7 +770,12 @@ main() {
     create-project)
       [[ -n "${PROJECT_DIR}" ]] || die "--project-dir is required for create-project."
       project_name="${CLUSTER_NAME:-$(basename "${project_abs}")}"
-      create_project_scaffold "${PROJECT_DIR}" "${project_name}"
+      # No project config exists yet to read cluster.environment from, so the
+      # flag decides and lab is the default. It is written into the scaffold's
+      # config.yaml, which every later action reads back.
+      [[ -n "${CONFIG_ENVIRONMENT}" ]] || CONFIG_ENVIRONMENT="${DEFAULT_CONFIG_ENVIRONMENT}"
+      talos_config_require_valid_env_name "${CONFIG_ENVIRONMENT}"
+      create_project_scaffold "${PROJECT_DIR}" "${project_name}" "${CONFIG_ENVIRONMENT}"
       if [[ "${DRY_RUN}" == "true" ]]; then
         log_info "[DRY-RUN] Would initialize Factory image IDs via refresh-schematics."
       else
@@ -754,42 +791,42 @@ main() {
       return 0
       ;;
     generate)
-      cmd=("${SCRIPT_DIR}/cluster-bootstrap.sh" "--env=lab" "--mode=generate")
+      cmd=("${SCRIPT_DIR}/cluster-bootstrap.sh" "--env=${CONFIG_ENVIRONMENT}" "--mode=generate")
       [[ -n "${CLUSTER_NAME}" ]] && cmd+=("--cluster-name=${CLUSTER_NAME}")
       [[ -n "${GENERATED_DIR}" ]] && cmd+=("--generated-dir=${GENERATED_DIR}")
       [[ "${FORCE_GENERATE}" == "true" ]] && cmd+=("--force-generate")
       [[ "${DRY_RUN}" == "true" ]] && cmd+=("--dry-run")
       ;;
     provision)
-      cmd=("${SCRIPT_DIR}/provision-cluster.sh" "--env=lab" "create")
+      cmd=("${SCRIPT_DIR}/provision-cluster.sh" "--env=${CONFIG_ENVIRONMENT}" "create")
       [[ -n "${WORKER_COUNT}" ]] && cmd+=("--worker-count=${WORKER_COUNT}")
       [[ "${DRY_RUN}" == "true" ]] && cmd+=("--dry-run")
       ;;
     prepare-bootstrap)
-      cmd=("${SCRIPT_DIR}/cluster-bootstrap.sh" "--env=lab" "--mode=apply" "--apply-stage=pre")
+      cmd=("${SCRIPT_DIR}/cluster-bootstrap.sh" "--env=${CONFIG_ENVIRONMENT}" "--mode=apply" "--apply-stage=pre")
       [[ -n "${CLUSTER_NAME}" ]] && cmd+=("--cluster-name=${CLUSTER_NAME}")
       [[ -n "${GENERATED_DIR}" ]] && cmd+=("--generated-dir=${GENERATED_DIR}")
       [[ "${DRY_RUN}" == "true" ]] && cmd+=("--dry-run")
       ;;
     apply-config)
-      cmd=("${SCRIPT_DIR}/cluster-bootstrap.sh" "--env=lab" "--mode=apply")
+      cmd=("${SCRIPT_DIR}/cluster-bootstrap.sh" "--env=${CONFIG_ENVIRONMENT}" "--mode=apply")
       [[ -n "${CLUSTER_NAME}" ]] && cmd+=("--cluster-name=${CLUSTER_NAME}")
       [[ -n "${GENERATED_DIR}" ]] && cmd+=("--generated-dir=${GENERATED_DIR}")
       [[ "${DRY_RUN}" == "true" ]] && cmd+=("--dry-run")
       ;;
     bootstrap)
-      cmd=("${SCRIPT_DIR}/cluster-bootstrap.sh" "--env=lab" "--mode=bootstrap")
+      cmd=("${SCRIPT_DIR}/cluster-bootstrap.sh" "--env=${CONFIG_ENVIRONMENT}" "--mode=bootstrap")
       [[ -n "${CLUSTER_NAME}" ]] && cmd+=("--cluster-name=${CLUSTER_NAME}")
       [[ -n "${GENERATED_DIR}" ]] && cmd+=("--generated-dir=${GENERATED_DIR}")
       [[ "${DRY_RUN}" == "true" ]] && cmd+=("--dry-run")
       ;;
     sync-access)
       [[ -n "${project_abs}" ]] || die "--project-dir is required for sync-access."
-      cmd=("${SCRIPT_DIR}/sync-kubectl.sh" "--env=lab" "--source=${project_abs}/generated/kubeconfig")
+      cmd=("${SCRIPT_DIR}/sync-kubectl.sh" "--env=${CONFIG_ENVIRONMENT}" "--source=${project_abs}/generated/kubeconfig")
       [[ -n "${CLUSTER_NAME}" ]] && cmd+=("--cluster-name=${CLUSTER_NAME}")
       [[ "${DRY_RUN}" == "true" ]] && cmd+=("--dry-run")
       run_or_echo "${cmd[@]}"
-      cmd=("${SCRIPT_DIR}/sync-talosctl.sh" "--env=lab" "--source=${project_abs}/generated/talosconfig")
+      cmd=("${SCRIPT_DIR}/sync-talosctl.sh" "--env=${CONFIG_ENVIRONMENT}" "--source=${project_abs}/generated/talosconfig")
       [[ -n "${CLUSTER_NAME}" ]] && cmd+=("--cluster-name=${CLUSTER_NAME}")
       [[ "${DRY_RUN}" == "true" ]] && cmd+=("--dry-run")
       ;;

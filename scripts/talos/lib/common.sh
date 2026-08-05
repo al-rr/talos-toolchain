@@ -188,6 +188,21 @@ load_overlay_vars() {
   # shellcheck disable=SC1090
   source "${base_vars}"
 
+  # The environment layer always loads when it exists, including when an
+  # explicit project vars file was given. These are layers, not alternatives:
+  # an environment holds what every cluster in it shares (vSphere endpoint,
+  # datastore, network, VIP, SSH user), and a project holds only what is that
+  # cluster's own. Treating them as either/or made each project restate its
+  # whole environment, which is the duplication the overlay existed to avoid.
+  if [[ -f "${env_vars}" ]]; then
+    log_info "Loading environment '${env_name}' vars from ${env_vars}"
+    # shellcheck disable=SC1090
+    source "${env_vars}"
+  elif [[ -z "${explicit_vars_file}" ]]; then
+    log_warn "No overlay vars file found for environment '${env_name}' at ${env_vars}"
+  fi
+
+  # The project layers on top of its environment and wins on conflict.
   if [[ -n "${explicit_vars_file}" ]]; then
     if [[ "${explicit_vars_file}" != /* ]]; then
       explicit_vars_file="${repo_root}/${explicit_vars_file}"
@@ -196,13 +211,15 @@ load_overlay_vars() {
     log_info "Loading explicit overlay vars from ${explicit_vars_file}"
     # shellcheck disable=SC1090
     source "${explicit_vars_file}"
-  else
-    if [[ -f "${env_vars}" ]]; then
-      # shellcheck disable=SC1090
-      source "${env_vars}"
-    else
-      log_warn "No overlay vars file found for environment '${env_name}' at ${env_vars}"
-    fi
+  fi
+
+  # Local overrides mirror the same layering: the environment's local file
+  # first, then the project's, so a machine-specific override in a project
+  # still wins over the environment's.
+  if [[ -f "${local_vars}" ]]; then
+    log_info "Loading local overlay overrides from ${local_vars}"
+    # shellcheck disable=SC1090
+    source "${local_vars}"
   fi
 
   if [[ -n "${explicit_local_vars_file}" ]]; then
@@ -213,12 +230,6 @@ load_overlay_vars() {
       log_info "Loading explicit local overlay overrides from ${explicit_local_vars_file}"
       # shellcheck disable=SC1090
       source "${explicit_local_vars_file}"
-    fi
-  else
-    if [[ -f "${local_vars}" ]]; then
-      log_info "Loading local overlay overrides from ${local_vars}"
-      # shellcheck disable=SC1090
-      source "${local_vars}"
     fi
   fi
 

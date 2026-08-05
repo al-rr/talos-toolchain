@@ -29,6 +29,8 @@ TARGETS=(
   "${TALOS_DIR}/validate-cilium-handoff.sh"
   "${TALOS_DIR}/vars.sh"
   "${TALOS_DIR}/tests/test-local-cluster-cilium.sh"
+  "${TALOS_DIR}/tests/test-cluster-patch-model.sh"
+  "${TALOS_DIR}/tests/test-environment-resolution.sh"
 )
 
 FAIL_COUNT=0
