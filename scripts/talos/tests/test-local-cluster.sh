@@ -404,8 +404,18 @@ fi
 
 # --- destroy (stubbed) with --confirm-destroy actually tears down and cleans up ---
 
+reset_logs
 status=0
 output="$(run_local_cluster destroy --name=real-cluster --state-root="${STATE_ROOT}" --confirm-destroy 2>&1)" || status=$?
+# talosctl talks to Docker itself. Without the resolved endpoint it reaches for
+# /var/run/docker.sock, which does not exist on a Colima host, and the destroy
+# aborts before the state directory is removed -- leaving exactly the orphaned
+# cluster the marker fix exists to prevent.
+if grep -q "^DOCKER_HOST=unix://${FAKE_COLIMA_SOCKET}$" "${STUB_LOG_DIR}/talosctl.log" 2>/dev/null; then
+  pass "destroy passes the resolved Docker endpoint to talosctl"
+else
+  fail "destroy must not invoke talosctl with the default socket: $(grep '^DOCKER_HOST=' "${STUB_LOG_DIR}/talosctl.log" 2>/dev/null)"
+fi
 if [[ "${status}" -eq 0 ]]; then
   pass "destroy --confirm-destroy (stubbed) exits 0"
 else

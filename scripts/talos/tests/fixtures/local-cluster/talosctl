@@ -8,7 +8,11 @@ if [[ -n "${STUB_TALOSCTL_LOG:-}" ]]; then
   printf '%s\n' "$*" >> "${STUB_TALOSCTL_LOG}"
 fi
 
-if [[ "$1" == "cluster" && "$2" == "create" && "$3" == "docker" && -n "${STUB_TALOSCTL_LOG:-}" ]]; then
+# The real talosctl reads DOCKER_HOST for every docker-provisioner command,
+# not just create -- destroy and show reach the daemon the same way. Record it
+# unconditionally so the stub cannot imply create is the only caller that
+# needs an endpoint.
+if [[ -n "${STUB_TALOSCTL_LOG:-}" ]]; then
   printf 'DOCKER_HOST=%s\n' "${DOCKER_HOST:-<unset>}" >> "${STUB_TALOSCTL_LOG}"
 fi
 

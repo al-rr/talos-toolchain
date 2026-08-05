@@ -952,8 +952,18 @@ do_status() {
     return 0
   fi
 
-  log_info "Cluster status: ${show_cmd[*]}"
-  "${show_cmd[@]}"
+  # talosctl talks to Docker directly, so it needs the same endpoint create
+  # resolved -- on a Colima host the default /var/run/docker.sock does not
+  # exist. status is read-only diagnostics and must never fail on this, so an
+  # unresolvable endpoint degrades to a warning rather than dying.
+  local status_endpoint=""
+  if status_endpoint="$(resolve_docker_endpoint 2>/dev/null)"; then
+    log_info "Cluster status (DOCKER_HOST=${status_endpoint}): ${show_cmd[*]}"
+    DOCKER_HOST="${status_endpoint}" "${show_cmd[@]}" || \
+      log_warn "talosctl could not report cluster state; the containers may be gone while the state directory remains."
+  else
+    log_warn "No Docker endpoint could be resolved; skipping 'talosctl cluster show'. The state directory above is still reported accurately."
+  fi
 }
 
 do_destroy() {
@@ -998,8 +1008,13 @@ do_destroy() {
     die "Refusing to destroy '${CLUSTER_NAME}' without --confirm-destroy. Re-run with --dry-run first to preview, then add --confirm-destroy."
   fi
 
-  log_info "Destroying local cluster '${CLUSTER_NAME}': ${destroy_cmd[*]}"
-  "${destroy_cmd[@]}"
+  # Same endpoint create used: without it talosctl reaches for the default
+  # /var/run/docker.sock, which does not exist on a Colima host, and the
+  # destroy aborts before the state directory is ever removed.
+  local destroy_endpoint=""
+  destroy_endpoint="$(resolve_docker_endpoint)"
+  log_info "Destroying local cluster '${CLUSTER_NAME}' (DOCKER_HOST=${destroy_endpoint}): ${destroy_cmd[*]}"
+  DOCKER_HOST="${destroy_endpoint}" "${destroy_cmd[@]}"
 
   require_cluster_dir_contained
   require_dir_safe_if_present "${CLUSTER_DIR}" "Cluster directory"
