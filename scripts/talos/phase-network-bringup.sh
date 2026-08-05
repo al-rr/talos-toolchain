@@ -175,11 +175,47 @@ run_or_echo() {
   "$@"
 }
 
+# Collect every namespace the rendered bundle declares for itself.
+#
+# The values file is not a reliable source: a chart may default a namespace
+# that the values never mention. Cilium does exactly this — enabling
+# ingress/gateway/policy secrets sync without naming a namespace renders
+# Namespace/cilium-secrets plus namespaced RBAC inside it. Server-side dry-run
+# creates nothing, so those resources fail validation unless the namespace
+# already exists. The render is authoritative and is already on disk here.
+collect_render_namespaces() {
+  local render_path="$1"
+  awk '
+    function flush() {
+      if (kind == "Namespace" && name != "") { print name }
+      kind = ""; name = ""; in_meta = 0
+    }
+    /^---[[:space:]]*$/ { flush(); next }
+    /^kind:[[:space:]]/ {
+      kind = $0
+      sub(/^kind:[[:space:]]*/, "", kind)
+      gsub(/["\r]/, "", kind)
+      next
+    }
+    /^metadata:[[:space:]]*$/ { in_meta = 1; next }
+    in_meta && /^[[:space:]]+name:[[:space:]]/ {
+      if (name == "") {
+        name = $0
+        sub(/^[[:space:]]*name:[[:space:]]*/, "", name)
+        gsub(/["\r]/, "", name)
+      }
+      next
+    }
+    in_meta && /^[^[:space:]]/ { in_meta = 0 }
+    END { flush() }
+  ' "${render_path}" | sort -u
+}
+
 collect_cilium_secret_namespaces() {
   local values_path="$1"
   awk '
-    /^\s*secretsNamespace:\s*$/ { in_block=1; next }
-    in_block && /^\s*name:\s*/ {
+    /^[[:space:]]*secretsNamespace:[[:space:]]*$/ { in_block=1; next }
+    in_block && /^[[:space:]]*name:[[:space:]]*/ {
       ns=$0
       sub(/^[[:space:]]*name:[[:space:]]*/, "", ns)
       gsub(/"/, "", ns)
@@ -361,8 +397,14 @@ main() {
   label_namespace_security "${kubeconfig_file}" "${namespace}" \
     "${namespace_label_enforce}" "${namespace_label_audit}" "${namespace_label_warn}"
   if [[ "${ADDON_NAME}" == "cilium" ]]; then
-    mapfile -t extra_namespaces < <(collect_cilium_secret_namespaces "${values_file}")
+    mapfile -t extra_namespaces < <(
+      {
+        collect_render_namespaces "${render_file}"
+        collect_cilium_secret_namespaces "${values_file}"
+      } | sort -u
+    )
     for ns in "${extra_namespaces[@]}"; do
+      [[ -n "${ns}" ]] || continue
       [[ "${ns}" == "${namespace}" ]] && continue
       if [[ "${DRY_RUN}" == "true" ]]; then
         ensure_namespace "${kubeconfig_file}" "${ns}"
@@ -450,4 +492,7 @@ main() {
   log_info "Network Bring-up phase completed for addon '${ADDON_NAME}' in cluster '${CLUSTER_NAME}'."
 }
 
-main "$@"
+# Only run when executed; sourcing exposes the functions for unit tests.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi

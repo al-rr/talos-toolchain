@@ -1,0 +1,52 @@
+---
+# Source: cilium/templates/cilium-secrets-namespace.yaml
+# Verbatim shape from a real `helm template cilium 1.19.1` render. The lab
+# values never mention "cilium-secrets"; the chart defaults it because the
+# ingress/gateway/policy secrets-sync options are enabled. This is exactly the
+# case a values-file scan cannot see.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: "cilium-secrets"
+---
+# Source: cilium/templates/cilium-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cilium-config
+  namespace: kube-system
+data:
+  enable-ingress-secrets-sync: "true"
+  ingress-secrets-namespace: "cilium-secrets"
+  policy-secrets-namespace: "cilium-secrets"
+---
+# Source: cilium/templates/cilium-agent/role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cilium-ingress-secrets
+  namespace: "cilium-secrets"
+  labels:
+    app.kubernetes.io/part-of: cilium
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+---
+# Source: cilium/templates/cilium-agent/clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cilium
+rules:
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - networkpolicies
+  verbs:
+  - get

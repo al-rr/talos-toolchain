@@ -238,11 +238,46 @@ resolve_values_file_path() {
   return 1
 }
 
+# Collect every namespace the rendered bundle declares for itself. See the
+# matching comment in phase-network-bringup.sh: a chart may default a namespace
+# the values never mention (Cilium renders Namespace/cilium-secrets plus
+# namespaced RBAC inside it), and server-side dry-run creates nothing, so those
+# resources fail validation unless the namespace already exists.
+collect_render_namespaces() {
+  local render_path="$1"
+  awk '
+    function flush() {
+      if (kind == "Namespace" && name != "") { print name }
+      kind = ""; name = ""; in_meta = 0
+    }
+    /^---[[:space:]]*$/ { flush(); next }
+    /^kind:[[:space:]]/ {
+      kind = $0
+      sub(/^kind:[[:space:]]*/, "", kind)
+      gsub(/["\r]/, "", kind)
+      next
+    }
+    /^metadata:[[:space:]]*$/ { in_meta = 1; next }
+    in_meta && /^[[:space:]]+name:[[:space:]]/ {
+      if (name == "") {
+        name = $0
+        sub(/^[[:space:]]*name:[[:space:]]*/, "", name)
+        gsub(/["\r]/, "", name)
+      }
+      next
+    }
+    in_meta && /^[^[:space:]]/ { in_meta = 0 }
+    END { flush() }
+  ' "${render_path}" | sort -u
+}
+
 collect_cilium_secret_namespaces() {
   local values_path="$1"
+  # POSIX classes, not \s: the macOS awk does not support \s and silently
+  # matched only an unindented key, so nested values never resolved.
   awk '
-    /^\s*secretsNamespace:\s*$/ { in_block=1; next }
-    in_block && /^\s*name:\s*/ {
+    /^[[:space:]]*secretsNamespace:[[:space:]]*$/ { in_block=1; next }
+    in_block && /^[[:space:]]*name:[[:space:]]*/ {
       ns=$0
       sub(/^[[:space:]]*name:[[:space:]]*/, "", ns)
       gsub(/"/, "", ns)
@@ -418,8 +453,14 @@ install_single_addon() {
   fi
 
   if [[ "${addon}" == "cilium" ]]; then
-    mapfile -t extra_namespaces < <(collect_cilium_secret_namespaces "${values_file}")
+    mapfile -t extra_namespaces < <(
+      {
+        collect_render_namespaces "${render_file}"
+        collect_cilium_secret_namespaces "${values_file}"
+      } | sort -u
+    )
     for ns in "${extra_namespaces[@]}"; do
+      [[ -n "${ns}" ]] || continue
       [[ "${ns}" == "${namespace}" ]] && continue
       ensure_namespace "${kubeconfig_file}" "${ns}"
     done
