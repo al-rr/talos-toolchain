@@ -185,10 +185,102 @@ the ones this tree actually produces.
 - No Docker, Colima, Talos, Helm, Kubernetes, registry, GitHub, VMware, or
   credential command was run, per scope.
 
-**No live `local-cluster.sh create` has been executed.** The `/readyz` gate,
-the OCI filter, and the Colima parser are covered only by offline stubs. A
-live run requires separate owner authorization and is the only thing that
-proves the end-to-end fix.
+### Live validation (2026-08-05, owner-authorized)
+
+A live `local-cluster.sh create --name=talos-lab --cni=cilium` was executed on
+Colima/aarch64 after the owner authorized container creation and a Cilium
+install. **Both fixes this iteration targets are now proven in a real run**,
+and the run also exposed two further defects that every offline suite had
+passed over.
+
+Proven working:
+
+- **`/readyz` gate.** `[INFO] Kubernetes API reported /readyz=ok after 212s.`
+  The gate discovered the published endpoint (`127.0.0.1:32768`) dynamically,
+  fetched kubeconfig with retry, and reported legitimate progress every 30s of
+  its 600s budget. The pre-fix `curl -k` form would have consumed the whole
+  budget on 401s. Independently confirmed out-of-band with
+  `kubectl get --raw=/readyz` → `ok`.
+- **OCI render filter.** `helm template` (Phase 2/1) produced a clean manifest
+  and the mandatory server-side dry-run reached the API with real resources
+  instead of rejecting the bundle over a leading document with no
+  `apiVersion`/`kind`.
+- **Versioned patch model.** All three patches (`cni`, `cp`, `worker`)
+  materialized from the model into the cluster directory on a real create.
+- **Talos layer, again.** etcd healthy, kubelet healthy, all nodes finished
+  boot sequence — matching the 2026-08-04 evidence.
+
+Defects found live, both fixed in this iteration:
+
+1. **Chart-defaulted namespace broke the mandatory dry-run.** The first live
+   Cilium install failed with twelve `Error from server (NotFound):
+   namespaces "cilium-secrets" not found`. `collect_cilium_secret_namespaces`
+   derived the namespace list from the **values file**, but the lab values
+   never mention `cilium-secrets`; the chart defaults it because the
+   ingress/gateway/policy secrets-sync options are enabled, and renders
+   `Namespace/cilium-secrets` plus namespaced RBAC inside it. Server-side
+   dry-run creates nothing, so those resources could never validate on a fresh
+   cluster. Fixed by adding `collect_render_namespaces`, which derives the list
+   from the **rendered manifest** — the authoritative artifact, already on disk
+   at that point — and unioning it with the values-derived list.
+2. **`\s` is unsupported by the macOS awk.** `collect_cilium_secret_namespaces`
+   matched `/^\s*secretsNamespace:\s*$/`. The host awk (version 20200816, BWK)
+   does not implement `\s`, so the pattern only ever matched an **unindented**
+   key. Real Helm values nest `secretsNamespace:` under `ingressController:` /
+   `gatewayAPI:`, so the collector was effectively dead code on this platform.
+   Fixed by switching to POSIX `[[:space:]]` classes. This is the same class as
+   the known `mapfile` / `base64 -w0` / `timeout` portability gaps.
+
+Both defects existed identically in the day-2 path (`talos-gitops.sh`), which
+carries its own copy of the collector; both were fixed there too.
+
+After the fixes, the Cilium day-1 phase was re-run against the still-running
+cluster (Talos had converged; only the CNI install had failed, so a full
+12-minute rebuild was unnecessary and would have obscured the isolated fix).
+The dry-run passed and Helm reported `STATUS: deployed`, Cilium 1.19.1.
+
+**Outcome: Stage 2 passed.** The cluster reached the state that was previously
+unreachable — the `all k8s nodes to report` gate could never pass under
+`cni: none` because nothing made the nodes Ready:
+
+```
+NAME                       STATUS   ROLES           AGE   VERSION
+talos-lab-controlplane-1   Ready    control-plane   29m   v1.36.2
+talos-lab-worker-1         Ready    <none>          29m   v1.36.2
+```
+
+All 11 pods Running: cilium 2/2, cilium-envoy 2/2, cilium-operator 2/2,
+coredns 2/2, and the three control-plane statics. The restart counts on
+`kube-controller-manager` (3) and `kube-scheduler` (4) are ordinary
+leader-election churn during Talos bootstrap; both are stable.
+
+Environment note for anyone reproducing this: image pulls dominate the
+timeline. Six Cilium images (~1.5 GB total) pull concurrently through a single
+Colima VM on aarch64; the operator alone reported
+`totalImagesPullingTime: 9m42s`. The phase script's 300s `rollout status`
+timeout expires well before that and emits a warning, which is **not** a
+failure — the rollout completed on its own afterwards. That default is worth
+revisiting for cold-cache hosts.
+
+Regression coverage added: `scripts/talos/tests/test-render-namespaces.sh`
+(7/7), built on a fixture copied from the **real** render rather than an
+invented one, plus a `BASH_SOURCE`/`$0` guard on `phase-network-bringup.sh` so
+its functions can be unit-tested without executing `main`. Note that all eight
+pre-existing suites were green both before and after this fix — they did not
+and could not detect it, which is the same fixture-fidelity failure recorded
+earlier in this repository.
+
+### Live validation — process defect found
+
+`local-cluster.sh destroy` cannot clean up after an interrupted create. The
+wrapper marker is written only **after** `talosctl cluster create docker`
+returns (`local-cluster.sh:874`), while `do_destroy` refuses to act without it
+(`local-cluster.sh:930`). Any create killed mid-flight — which is precisely
+what the EXIT trap does on a Cilium failure — leaves containers and state that
+the wrapper itself will not remove, forcing manual `docker rm` plus `rm -rf`.
+The guard is correct in intent; the marker is written at the wrong time. It
+should be written before the create starts. Belongs to the Stage 3 lifecycle
+work, not fixed here.
 
 ### Deviations from the original task
 
