@@ -1,0 +1,13 @@
+# Control-plane patch: steady-state node behavior.
+#
+# hostDNS lets the node resolve names through the host resolver and forwards
+# kube-dns queries to it, which keeps name resolution working while CoreDNS is
+# still coming up. Talos time sync is disabled because the platform underneath
+# (hypervisor or container runtime) already owns the clock.
+machine:
+  time:
+    disabled: true
+  features:
+    hostDNS:
+      enabled: true
+      forwardKubeDNSToHost: true

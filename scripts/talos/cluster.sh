@@ -58,6 +58,20 @@ source "${REPO_ROOT}/scripts/talos/lib/common.sh"
 # shellcheck disable=SC1091
 source "${REPO_ROOT}/scripts/talos/lib/yaml-config.sh"
 
+# The Talos machine-config patch model. Versioned YAML files rather than
+# inline heredocs, so an operator can read and edit them before a project
+# exists, and so there is exactly one place where the shipped defaults live.
+# See cluster-patches/README.md.
+PATCH_MODEL_DIR="${REPO_ROOT}/cluster-patches"
+PATCH_MODEL_FILES=(
+  cni.patch.yaml
+  cp.patch.yaml
+  worker.patch.yaml
+  cp-bootstrap.patch.yaml
+  worker-bootstrap.patch.yaml
+  longhorn.patch.yaml
+)
+
 ACTION=""
 VARS_FILE=""
 LOCAL_VARS_FILE=""
@@ -379,6 +393,37 @@ refresh_schematics() {
   log_info "Updated image vars in: ${vars_file}"
 }
 
+# @description Copies the shipped patch model into a project's own patches
+#   directory, so the project owns an editable copy from that point on.
+#
+#   Never overwrites: once a file exists it is the project's, and re-running
+#   create-project must not silently discard operator edits. That also makes
+#   the whole operation safe to repeat.
+#
+#   cp-bootstrap/worker-bootstrap are zero-byte on purpose --
+#   cluster-bootstrap.sh guards them with `[[ -s ]]` and only passes them to
+#   talosctl when they have content. `cp` preserves that emptiness.
+# @arg $1 string Destination patches directory (must already exist).
+materialize_patch_model() {
+  local dest_dir="$1"
+  local name=""
+
+  [[ -d "${PATCH_MODEL_DIR}" ]] || die "Patch model directory not found: ${PATCH_MODEL_DIR}"
+
+  for name in "${PATCH_MODEL_FILES[@]}"; do
+    [[ -f "${PATCH_MODEL_DIR}/${name}" ]] || die "Missing patch model file: ${PATCH_MODEL_DIR}/${name}"
+  done
+
+  for name in "${PATCH_MODEL_FILES[@]}"; do
+    if [[ -f "${dest_dir}/${name}" ]]; then
+      log_info "Keeping existing ${dest_dir}/${name} (not overwritten by the patch model)."
+      continue
+    fi
+    cp "${PATCH_MODEL_DIR}/${name}" "${dest_dir}/${name}"
+    log_info "Materialized ${dest_dir}/${name} from the patch model."
+  done
+}
+
 create_project_scaffold() {
   local project_dir="$1"
   local cluster_name="$2"
@@ -397,72 +442,7 @@ create_project_scaffold() {
 
   mkdir -p "${project_abs}/patches" "${project_abs}/generated" "${project_abs}/helm"
 
-  if [[ ! -f "${project_abs}/patches/cni.patch.yaml" ]]; then
-    cat > "${project_abs}/patches/cni.patch.yaml" <<'EOF_CNI'
-cluster:
-  network:
-    cni:
-      name: none
-  proxy:
-    disabled: true
-EOF_CNI
-  fi
-
-  if [[ ! -f "${project_abs}/patches/cp.patch.yaml" ]]; then
-    cat > "${project_abs}/patches/cp.patch.yaml" <<'EOF_CP_PATCH'
-machine:
-  time:
-    disabled: true
-  features:
-    hostDNS:
-      enabled: true
-      forwardKubeDNSToHost: true
-EOF_CP_PATCH
-  fi
-
-  if [[ ! -f "${project_abs}/patches/worker.patch.yaml" ]]; then
-    cat > "${project_abs}/patches/worker.patch.yaml" <<'EOF_WORKER_PATCH'
-machine:
-  time:
-    disabled: true
-  features:
-    hostDNS:
-      enabled: true
-      forwardKubeDNSToHost: true
-EOF_WORKER_PATCH
-  fi
-
-  if [[ ! -f "${project_abs}/patches/cp-bootstrap.patch.yaml" ]]; then
-    : > "${project_abs}/patches/cp-bootstrap.patch.yaml"
-  fi
-
-  if [[ ! -f "${project_abs}/patches/worker-bootstrap.patch.yaml" ]]; then
-    : > "${project_abs}/patches/worker-bootstrap.patch.yaml"
-  fi
-
-  if [[ ! -f "${project_abs}/patches/longhorn.patch.yaml" ]]; then
-    cat > "${project_abs}/patches/longhorn.patch.yaml" <<'EOF_LONGHORN'
-machine:
-  kubelet:
-    extraMounts:
-      - destination: /var/lib/longhorn
-        type: bind
-        source: /var/mnt/longhorn
-        options:
-          - bind
-          - rshared
-          - rw
-  disks:
-    - device: /dev/sdb
-      partitions:
-        - mountpoint: /var/mnt/longhorn
-  kernel:
-    modules:
-      - name: nbd
-      - name: iscsi_tcp
-      - name: configfs
-EOF_LONGHORN
-  fi
+  materialize_patch_model "${project_abs}/patches"
 
   if [[ ! -f "${project_abs}/schematic.cp.yaml" ]]; then
     cat > "${project_abs}/schematic.cp.yaml" <<'EOF_SCHEMATIC_CP'

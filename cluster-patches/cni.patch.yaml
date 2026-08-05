@@ -1,0 +1,14 @@
+# Cluster-wide patch: hand pod networking and service load-balancing to Cilium.
+#
+# Disables the Talos-managed CNI and kube-proxy so Cilium owns both from day 1
+# instead of racing the managed defaults. The cluster deliberately has no pod
+# networking between bootstrap and the Cilium install; that interval is part of
+# the design, not a failure.
+#
+# Applied to every node type. Required by any project whose CNI is Cilium.
+cluster:
+  network:
+    cni:
+      name: none
+  proxy:
+    disabled: true

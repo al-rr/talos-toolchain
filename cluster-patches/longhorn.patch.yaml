@@ -1,0 +1,28 @@
+# Longhorn machine-side prerequisites.
+#
+# Longhorn splits across both days: this file is the day-1 half, because
+# partitioning a disk and loading kernel modules cannot be done by a Helm chart
+# afterwards. The chart itself is day-2, reconciled by Argo CD.
+#
+# Assumes a second block device at /dev/sdb. Adjust the device per project
+# before provisioning — it is wrong for any node with a different disk layout,
+# and it does not apply to container-based backends, which have no such device.
+machine:
+  kubelet:
+    extraMounts:
+      - destination: /var/lib/longhorn
+        type: bind
+        source: /var/mnt/longhorn
+        options:
+          - bind
+          - rshared
+          - rw
+  disks:
+    - device: /dev/sdb
+      partitions:
+        - mountpoint: /var/mnt/longhorn
+  kernel:
+    modules:
+      - name: nbd
+      - name: iscsi_tcp
+      - name: configfs
