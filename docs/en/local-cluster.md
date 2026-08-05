@@ -258,11 +258,16 @@ only ever performs the day-1 imperative bootstrap.
 On failure at any step (including an interrupt), nothing is auto-destroyed:
 whatever Talos/Cilium state exists is left in place, together with
 `<cluster-dir>/create.log` capturing the backgrounded create's own output
-(see "Recovering a partially created cluster" below), and the wrapper
-marker is only written after every step above succeeds and the backgrounded
-create process has been reaped — so a partially failed `--cni=cilium`
-create is never mistaken for a completed one, and no `talosctl` process is
-ever left running unsupervised.
+(see "Recovering a partially created cluster" below), and no `talosctl`
+process is ever left running unsupervised.
+
+The wrapper marker is written **before** the backend starts, recording
+`state=creating`, and is promoted to `state=ready` only after every step
+above succeeds and the backgrounded create process has been reaped. A
+partially failed create is therefore never mistaken for a completed one, and
+— unlike earlier versions, which wrote the marker only on success — the
+cluster it left behind is still destroyable by this wrapper instead of
+requiring manual `docker rm` and `rm -rf`.
 
 ## Known limitations
 
@@ -296,12 +301,15 @@ automatic cleanup or retry. Recovery is manual:
 2. If the wrapper marker at
    `.../local-clusters/<name>/.talos-toolchain-local-cluster` is present,
    `destroy --name=<name> --confirm-destroy` will tear it down and remove the
-   isolated state directory.
-3. If the marker is absent (for example, `talosctl cluster create docker`
-   itself failed before the wrapper could write it), `destroy` refuses to
-   touch the directory by design. Inspect
-   `.../local-clusters/<name>/talos-state` yourself and, if you are sure it
-   is safe, remove it manually before retrying `create` with the same
+   isolated state directory. This holds whether the marker records
+   `state=creating` or `state=ready`: an interrupted create is still this
+   wrapper's to clean up, and `status` reports which of the two it is.
+3. If the marker is absent, `destroy` refuses to touch the directory by
+   design — the wrapper only destroys clusters it created. Because the marker
+   is now written before the backend runs, this should only happen for
+   clusters created outside the wrapper, or by a version older than this one.
+   Inspect `.../local-clusters/<name>/talos-state` yourself and, if you are
+   sure it is safe, remove it manually before retrying `create` with the same
    `--name`.
 
 The wrapper never deletes or inspects this state automatically outside of an

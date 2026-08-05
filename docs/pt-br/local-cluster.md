@@ -268,11 +268,16 @@ Em caso de falha em qualquer etapa (incluindo uma interrupcao), nada e
 destruido automaticamente: o estado de Talos/Cilium que existir e mantido,
 junto com `<diretorio-do-cluster>/create.log` capturando a propria saida do
 create em segundo plano (veja "Recuperando um cluster criado parcialmente"
-abaixo), e a marca do wrapper so e escrita depois que todas as etapas acima
-tiverem sucesso e o processo de create em segundo plano tiver sido
-finalizado (reaped) — assim, um `create --cni=cilium` parcialmente falho
-nunca e confundido com um completo, e nenhum processo `talosctl` fica
-rodando sem supervisao.
+abaixo), e nenhum processo `talosctl` fica rodando sem supervisao.
+
+A marca do wrapper e escrita **antes** de o backend iniciar, registrando
+`state=creating`, e so e promovida a `state=ready` depois que todas as
+etapas acima tiverem sucesso e o processo de create em segundo plano tiver
+sido finalizado (reaped). Assim, um create parcialmente falho nunca e
+confundido com um completo e — diferente das versoes anteriores, que
+escreviam a marca apenas em caso de sucesso — o cluster deixado para tras
+continua destruivel por este wrapper, sem exigir `docker rm` e `rm -rf`
+manuais.
 
 ## Limitacoes conhecidas
 
@@ -307,13 +312,17 @@ nenhuma limpeza ou nova tentativa automatica. A recuperacao e manual:
 2. Se a marca do wrapper em
    `.../local-clusters/<name>/.talos-toolchain-local-cluster` estiver
    presente, `destroy --name=<name> --confirm-destroy` ira destruir o
-   cluster e remover o diretorio de estado isolado.
-3. Se a marca estiver ausente (por exemplo, o proprio `talosctl cluster
-   create docker` falhou antes de o wrapper conseguir escreve-la), o
-   `destroy` se recusa a tocar no diretorio, por design. Inspecione
-   `.../local-clusters/<name>/talos-state` voce mesmo e, se tiver certeza de
-   que e seguro, remova-o manualmente antes de tentar `create` novamente com
-   o mesmo `--name`.
+   cluster e remover o diretorio de estado isolado. Isso vale tanto para
+   `state=creating` quanto para `state=ready`: um create interrompido
+   continua sendo responsabilidade deste wrapper, e o `status` informa em
+   qual dos dois estados a marca esta.
+3. Se a marca estiver ausente, o `destroy` se recusa a tocar no diretorio,
+   por design — o wrapper so destroi clusters que ele mesmo criou. Como a
+   marca agora e escrita antes de o backend rodar, isso so deve acontecer
+   com clusters criados fora do wrapper ou por uma versao anterior a esta.
+   Inspecione `.../local-clusters/<name>/talos-state` voce mesmo e, se tiver
+   certeza de que e seguro, remova-o manualmente antes de tentar `create`
+   novamente com o mesmo `--name`.
 
 O wrapper nunca apaga ou inspeciona esse estado automaticamente fora de uma
 execucao explicita e confirmada de `destroy`.

@@ -276,6 +276,27 @@ set_cluster_paths() {
   CLUSTER_WORKER_PATCH="${CLUSTER_PATCH_DIR}/worker.patch.yaml"
 }
 
+# @description Write the wrapper ownership marker.
+# @arg $1 string Lifecycle state: "creating" before the backend runs,
+#   "ready" once the cluster is fully up.
+# @internal
+write_marker() {
+  local state="$1"
+  local created_at=""
+  # Preserve the original timestamp when promoting creating -> ready, so the
+  # marker records when the cluster was claimed rather than when it finished.
+  if [[ -f "${MARKER_FILE}" ]]; then
+    created_at="$(awk -F= '$1=="created_at"{print $2; exit}' "${MARKER_FILE}")"
+  fi
+  [[ -n "${created_at}" ]] || created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  {
+    printf 'name=%s\n' "${CLUSTER_NAME}"
+    printf 'created_at=%s\n' "${created_at}"
+    printf 'cni=%s\n' "${CNI_MODE}"
+    printf 'state=%s\n' "${state}"
+  } > "${MARKER_FILE}"
+}
+
 # @description Defense in depth: refuse to touch a resolved cluster
 #   directory that does not lexically live under the resolved state root.
 #   This is a name-shape check only; require_state_tree_safe below does the
@@ -807,6 +828,11 @@ do_create() {
   check_docker_daemon || die "Docker daemon preflight failed. See message above."
 
   if [[ -f "${MARKER_FILE}" ]]; then
+    local existing_state=""
+    existing_state="$(awk -F= '$1=="state"{print $2; exit}' "${MARKER_FILE}")"
+    if [[ "${existing_state}" == "creating" ]]; then
+      die "Cluster '${CLUSTER_NAME}' has state at ${CLUSTER_DIR} from an interrupted create. Run 'destroy --name=${CLUSTER_NAME} --confirm-destroy' to clean it up, or choose a different --name."
+    fi
     die "Cluster '${CLUSTER_NAME}' already has wrapper state at ${CLUSTER_DIR}. Run 'destroy --name=${CLUSTER_NAME}' first, or choose a different --name."
   fi
 
@@ -852,11 +878,20 @@ do_create() {
       log_info "[DRY-RUN] wait for Kubernetes API /readyz on the published host:port before Cilium day-1"
       bootstrap_cilium_day1 "${RESOLVED_GITOPS_REPO_ROOT}" "${KUBECONFIG_PATH}" "${CLUSTER_NAME}"
     fi
-    log_info "[DRY-RUN] write marker ${MARKER_FILE}"
+    log_info "[DRY-RUN] write marker ${MARKER_FILE} (state=creating before the backend runs, state=ready once it succeeds)"
     return 0
   fi
 
   mkdir -p "${TALOS_STATE_DIR}"
+
+  # Claim ownership before anything is created, not after. The marker is what
+  # authorises destroy, so writing it only on success left every interrupted
+  # create -- exactly what the EXIT trap produces when Cilium day-1 fails --
+  # as containers and state this wrapper would refuse to clean up, forcing a
+  # manual docker rm plus rm -rf. state=creating records that the cluster may
+  # be incomplete; destroy accepts it either way.
+  write_marker "creating"
+
   if [[ "${CNI_MODE}" == "cilium" ]]; then
     materialize_cluster_patch_project
     supervise_cilium_async_create "${docker_endpoint}" "${create_cmd[@]}"
@@ -867,11 +902,7 @@ do_create() {
     "${kubeconfig_cmd[@]}"
   fi
 
-  {
-    printf 'name=%s\n' "${CLUSTER_NAME}"
-    printf 'created_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    printf 'cni=%s\n' "${CNI_MODE}"
-  } > "${MARKER_FILE}"
+  write_marker "ready"
 
   log_info "Local cluster '${CLUSTER_NAME}' created."
   log_info "talosconfig: ${TALOSCONFIG_PATH}"
@@ -891,7 +922,15 @@ do_status() {
   check_docker_daemon || true
 
   if [[ -f "${MARKER_FILE}" ]]; then
-    log_info "Wrapper marker: present (${MARKER_FILE})"
+    local marker_state=""
+    marker_state="$(awk -F= '$1=="state"{print $2; exit}' "${MARKER_FILE}")"
+    # Markers written before this field existed have no state; report them as
+    # "ready" rather than claiming an interrupted create.
+    [[ -n "${marker_state}" ]] || marker_state="ready (assumed; marker predates state tracking)"
+    log_info "Wrapper marker: present (${MARKER_FILE}), state=${marker_state}"
+    if [[ "${marker_state}" == "creating" ]]; then
+      log_warn "This cluster's create did not finish. It may be incomplete; 'destroy --name=${CLUSTER_NAME} --confirm-destroy' will clean it up."
+    fi
   else
     log_warn "Wrapper marker: absent. This wrapper did not create '${CLUSTER_NAME}' at ${CLUSTER_DIR}."
   fi
@@ -935,6 +974,12 @@ do_destroy() {
   marker_name="$(awk -F= '$1=="name"{print $2; exit}' "${MARKER_FILE}")"
   if [[ "${marker_name}" != "${CLUSTER_NAME}" ]]; then
     die "Refusing to destroy: marker at ${MARKER_FILE} records name '${marker_name}', not requested '${CLUSTER_NAME}'."
+  fi
+
+  local marker_state=""
+  marker_state="$(awk -F= '$1=="state"{print $2; exit}' "${MARKER_FILE}")"
+  if [[ "${marker_state}" == "creating" ]]; then
+    log_warn "Marker records an unfinished create; destroying a partially created cluster. Some resources may already be absent, and talosctl may report them as such."
   fi
 
   local destroy_cmd=(

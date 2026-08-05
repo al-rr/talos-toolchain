@@ -424,10 +424,18 @@ if [[ "${output}" == *"network bring-up failed"* ]]; then
 else
   fail "the failure message should name the Cilium bring-up, not CoreDNS: ${output}"
 fi
-if [[ ! -f "${cluster_dir}/.talos-toolchain-local-cluster" ]]; then
-  pass "no wrapper marker is written when Cilium day-1 fails"
+# The marker is an ownership claim, not a success record. A failed day-1 must
+# still leave it -- with state=creating -- or destroy would refuse to clean up
+# the containers and state the failed create left behind.
+if [[ -f "${cluster_dir}/.talos-toolchain-local-cluster" ]]; then
+  pass "the wrapper marker survives a failed Cilium day-1 so destroy can clean up"
 else
-  fail "the wrapper marker must not be written when Cilium day-1 fails"
+  fail "a failed Cilium day-1 must leave the marker, or the cluster becomes undestroyable"
+fi
+if grep -q '^state=creating$' "${cluster_dir}/.talos-toolchain-local-cluster" 2>/dev/null; then
+  pass "the marker records state=creating after a failed Cilium day-1"
+else
+  fail "the marker should record state=creating, not ready: $(cat "${cluster_dir}/.talos-toolchain-local-cluster" 2>/dev/null)"
 fi
 
 # --- an arbitrary --name gets its own destination patch project, and a
@@ -496,10 +504,10 @@ if [[ -d "${cluster_dir}/talos-state" ]]; then
 else
   fail "create --cni=cilium must retain state on /readyz gate failure, not clean up automatically"
 fi
-if [[ ! -f "${cluster_dir}/.talos-toolchain-local-cluster" ]]; then
-  pass "create --cni=cilium never writes the wrapper marker when the /readyz gate fails"
+if grep -q '^state=creating$' "${cluster_dir}/.talos-toolchain-local-cluster" 2>/dev/null; then
+  pass "the marker records state=creating when the /readyz gate fails, keeping the cluster destroyable"
 else
-  fail "the wrapper marker must not be written when the /readyz gate fails"
+  fail "a failed /readyz gate must leave a state=creating marker: $(cat "${cluster_dir}/.talos-toolchain-local-cluster" 2>/dev/null)"
 fi
 
 # --- published API port discovery failure: create fails, state is retained
@@ -520,10 +528,10 @@ if [[ -d "${cluster_dir}/talos-state" ]]; then
 else
   fail "create --cni=cilium must retain state on failure, not clean up automatically"
 fi
-if [[ ! -f "${cluster_dir}/.talos-toolchain-local-cluster" ]]; then
-  pass "create --cni=cilium never writes the wrapper marker when it fails before completion"
+if grep -q '^state=creating$' "${cluster_dir}/.talos-toolchain-local-cluster" 2>/dev/null; then
+  pass "create --cni=cilium never promotes the marker to ready when it fails before completion"
 else
-  fail "the wrapper marker must not be written on a failed create"
+  fail "a create that fails before completion must leave a state=creating marker: $(cat "${cluster_dir}/.talos-toolchain-local-cluster" 2>/dev/null)"
 fi
 
 # --- async supervision: talosctl cluster create docker blocks on cluster
@@ -611,10 +619,10 @@ if [[ "${output}" == *"talosctl cluster create docker failed"* ]]; then
 else
   fail "expected a diagnostic mentioning the backgrounded create failure: ${output}"
 fi
-if [[ ! -f "${cluster_dir}/.talos-toolchain-local-cluster" ]]; then
-  pass "async create never writes the success marker when the backgrounded create ultimately fails"
+if grep -q '^state=creating$' "${cluster_dir}/.talos-toolchain-local-cluster" 2>/dev/null; then
+  pass "async create never promotes the marker to ready when the backgrounded create ultimately fails"
 else
-  fail "the wrapper marker must not be written when the backgrounded create fails"
+  fail "a failed backgrounded create must leave a state=creating marker: $(cat "${cluster_dir}/.talos-toolchain-local-cluster" 2>/dev/null)"
 fi
 if grep -q "template" "${STUB_LOG_DIR}/helm.log" 2>/dev/null; then
   pass "Cilium day-1 still bootstraps even though the backgrounded create later reports failure (its failure is only propagated after)"
@@ -666,10 +674,10 @@ if [[ -d "${cluster_dir}/talos-state" ]]; then
 else
   fail "an unexpected mid-flow failure must retain state, not clean up automatically"
 fi
-if [[ ! -f "${cluster_dir}/.talos-toolchain-local-cluster" ]]; then
-  pass "an unexpected mid-flow failure never writes the success marker"
+if grep -q '^state=creating$' "${cluster_dir}/.talos-toolchain-local-cluster" 2>/dev/null; then
+  pass "an unexpected mid-flow failure never promotes the marker to ready"
 else
-  fail "the wrapper marker must not be written when an unexpected mid-flow failure occurs"
+  fail "an unexpected mid-flow failure must leave a state=creating marker: $(cat "${cluster_dir}/.talos-toolchain-local-cluster" 2>/dev/null)"
 fi
 
 echo ""

@@ -231,6 +231,11 @@ if [[ -f "${cluster_dir}/.talos-toolchain-local-cluster" ]]; then
 else
   fail "create (stubbed) did not write a marker at ${cluster_dir}/.talos-toolchain-local-cluster"
 fi
+if grep -q '^state=ready$' "${cluster_dir}/.talos-toolchain-local-cluster" 2>/dev/null; then
+  pass "a successful create promotes the marker to state=ready"
+else
+  fail "a successful create must record state=ready: $(cat "${cluster_dir}/.talos-toolchain-local-cluster" 2>/dev/null)"
+fi
 
 if [[ -f "${cluster_dir}/kubeconfig" ]]; then
   pass "create (stubbed) fetches an isolated kubeconfig"
@@ -410,6 +415,56 @@ if [[ ! -d "${cluster_dir}" ]]; then
   pass "destroy --confirm-destroy (stubbed) removes the isolated cluster directory"
 else
   fail "destroy --confirm-destroy (stubbed) should remove ${cluster_dir}"
+fi
+
+# --- destroy cleans up after an interrupted create (state=creating) ---
+#
+# A create killed mid-flight -- what the EXIT trap produces when Cilium day-1
+# fails -- used to leave containers and state behind with no marker, so destroy
+# refused to act and the only way out was a manual docker rm plus rm -rf. The
+# marker is now written before the backend runs, so this must be destroyable.
+
+interrupted_dir="${STATE_ROOT}/interrupted-cluster"
+mkdir -p "${interrupted_dir}/talos-state"
+cat > "${interrupted_dir}/.talos-toolchain-local-cluster" <<'MARKER'
+name=interrupted-cluster
+created_at=2026-08-05T00:00:00Z
+cni=cilium
+state=creating
+MARKER
+status=0
+output="$(run_local_cluster destroy --name=interrupted-cluster --state-root="${STATE_ROOT}" --confirm-destroy 2>&1)" || status=$?
+if [[ "${status}" -eq 0 ]]; then
+  pass "destroy cleans up a cluster left behind by an interrupted create"
+else
+  fail "destroy must handle a state=creating marker: ${output}"
+fi
+if [[ ! -d "${interrupted_dir}" ]]; then
+  pass "destroy removes the interrupted cluster's directory"
+else
+  fail "destroy should have removed ${interrupted_dir}"
+fi
+if [[ "${output}" == *"unfinished create"* ]]; then
+  pass "destroy says it is tearing down a partially created cluster"
+else
+  fail "destroy should warn that the create never finished: ${output}"
+fi
+
+# --- a marker predating state tracking is still destroyable ---
+
+legacy_dir="${STATE_ROOT}/legacy-cluster"
+mkdir -p "${legacy_dir}/talos-state"
+cat > "${legacy_dir}/.talos-toolchain-local-cluster" <<'MARKER'
+name=legacy-cluster
+created_at=2026-08-04T00:00:00Z
+cni=flannel
+MARKER
+status=0
+output="$(run_local_cluster destroy --name=legacy-cluster --state-root="${STATE_ROOT}" --confirm-destroy 2>&1)" || status=$?
+if [[ "${status}" -eq 0 && ! -d "${legacy_dir}" ]]; then
+  pass "destroy still accepts a marker written before state tracking existed"
+else
+  fail "a stateless marker must remain destroyable (status ${status}): ${output}"
 fi
 
 # --- create preflight failure: unresponsive Docker daemon blocks create ---
