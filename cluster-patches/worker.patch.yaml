@@ -1,0 +1,12 @@
+# Worker patch: steady-state node behavior.
+#
+# Mirrors cp.patch.yaml. Kept as a separate file so worker behavior can diverge
+# from the control plane without editing a shared document, even though the two
+# do not differ today.
+machine:
+  time:
+    disabled: true
+  features:
+    hostDNS:
+      enabled: true
+      forwardKubeDNSToHost: true

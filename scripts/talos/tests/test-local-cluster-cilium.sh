@@ -123,12 +123,15 @@ EOF_RELEASE
 GITOPS_ROOT="${TMP_ROOT}/gitops"
 build_gitops_checkout "${GITOPS_ROOT}"
 
+PATCH_MODEL_DIR="$(cd "${TALOS_DIR}/../.." && pwd)/cluster-patches"
+
 run_local_cluster() {
   STUB_TALOSCTL_LOG="${STUB_LOG_DIR}/talosctl.log" \
   STUB_DOCKER_LOG="${STUB_LOG_DIR}/docker.log" \
   STUB_COLIMA_LOG="${STUB_LOG_DIR}/colima.log" \
   STUB_HELM_LOG="${STUB_LOG_DIR}/helm.log" \
   STUB_KUBECTL_LOG="${STUB_LOG_DIR}/kubectl.log" \
+  STUB_CURL_LOG="${STUB_LOG_DIR}/curl.log" \
   STUB_COLIMA_DOCKER_SOCKET="${STUB_COLIMA_DOCKER_SOCKET-${FAKE_COLIMA_SOCKET}}" \
     "${LOCAL_CLUSTER_SH}" "$@"
 }
@@ -227,15 +230,65 @@ if [[ "${status}" -eq 0 ]]; then
 else
   fail "create --cni=cilium --dry-run should exit 0 (got ${status}): ${output}"
 fi
-if [[ "${output}" == *"name: none"* && "${output}" != *'"op":"replace"'* ]]; then
-  pass "create --cni=cilium --dry-run plans a strategic-merge CNI-none config-patch (not JSON6902)"
+preview_patch_dir="${STATE_ROOT}/cilium-preview/patches"
+if [[ "${output}" == *"--config-patch @${preview_patch_dir}/cni.patch.yaml"* \
+   && "${output}" == *"--config-patch-controlplanes @${preview_patch_dir}/cp.patch.yaml"* \
+   && "${output}" == *"--config-patch-workers @${preview_patch_dir}/worker.patch.yaml"* ]]; then
+  pass "create --cni=cilium --dry-run plans the destination cluster's own cni/cp/worker patches at their scoped flags"
 else
-  fail "create --cni=cilium --dry-run did not preview the expected strategic-merge CNI-none config-patch: ${output}"
+  fail "create --cni=cilium --dry-run did not preview the expected destination patch flags: ${output}"
+fi
+# The patches talosctl receives must be the per-cluster destination copies,
+# never the shared model inside the toolchain checkout -- otherwise every
+# cluster would share one directory and an operator's per-cluster edits would
+# leak across clusters.
+if [[ "${output}" != *"--config-patch @${PATCH_MODEL_DIR}/"* ]]; then
+  pass "create --cni=cilium --dry-run never passes talosctl the shared default patch model directly"
+else
+  fail "create --cni=cilium --dry-run passed the shared default patch model to talosctl instead of the destination copy: ${output}"
+fi
+if [[ "${output}" == *"materialize ${preview_patch_dir}/cni.patch.yaml"* \
+   && "${output}" == *"materialize ${preview_patch_dir}/cp.patch.yaml"* \
+   && "${output}" == *"materialize ${preview_patch_dir}/worker.patch.yaml"* ]]; then
+  pass "create --cni=cilium --dry-run previews materializing all three patches into the destination"
+else
+  fail "create --cni=cilium --dry-run did not preview materializing the destination patch project: ${output}"
+fi
+if [[ ! -d "${preview_patch_dir}" ]]; then
+  pass "create --cni=cilium --dry-run materializes nothing on disk"
+else
+  fail "create --cni=cilium --dry-run must not create ${preview_patch_dir}"
+fi
+# Regression guard: `talosctl gen config` scopes patches with the singular
+# --config-patch-control-plane / --config-patch-worker, but `talosctl cluster
+# create docker` only accepts the plural forms and exits with "unknown flag"
+# on the singular ones -- before creating a single container, which makes the
+# failure look like a silent no-op. The stub talosctl accepts any flag, so
+# only this assertion keeps the gen-config spelling from creeping back in.
+if [[ "${output}" != *"--config-patch-control-plane"* && "${output}" != *"--config-patch-worker "* ]]; then
+  pass "create --cni=cilium --dry-run never emits the 'talosctl gen config' singular patch flags, which the Docker backend rejects"
+else
+  fail "create --cni=cilium --dry-run emitted a singular --config-patch-control-plane/--config-patch-worker flag, which 'talosctl cluster create docker' rejects: ${output}"
+fi
+if grep -q "name: none" "${PATCH_MODEL_DIR}/cni.patch.yaml" && ! grep -q '"op":"replace"' "${PATCH_MODEL_DIR}/cni.patch.yaml"; then
+  pass "the default cni patch model is a strategic-merge CNI-none patch (not JSON6902)"
+else
+  fail "the default cni patch model is not the expected strategic-merge CNI-none patch"
+fi
+if grep -q "disabled: true" "${PATCH_MODEL_DIR}/cni.patch.yaml"; then
+  pass "the default cni patch model also disables the managed kube-proxy"
+else
+  fail "the default cni patch model must set cluster.proxy.disabled: true"
 fi
 if [[ "${output}" == *"--host-ip 127.0.0.1"* && "${output}" == *"--exposed-ports 0:6443/tcp"* ]]; then
   pass "create --cni=cilium --dry-run publishes the Kubernetes API on a loopback host port"
 else
   fail "create --cni=cilium --dry-run did not preview the loopback port publish flags: ${output}"
+fi
+if [[ "${output}" == *"/readyz"* ]]; then
+  pass "create --cni=cilium --dry-run previews the Kubernetes API /readyz gate before Cilium day-1"
+else
+  fail "create --cni=cilium --dry-run did not preview the /readyz gate: ${output}"
 fi
 if [[ "${output}" == *"validate-cilium-handoff.sh"* ]]; then
   pass "create --cni=cilium --dry-run previews the Cilium handoff validator gate"
@@ -298,6 +351,165 @@ else
   fail "create --cni=cilium (stubbed) did not pass the resolved Docker endpoint to talosctl: $(cat "${STUB_LOG_DIR}/talosctl.log" 2>/dev/null)"
 fi
 
+if grep -q -- "get --raw=/readyz" "${STUB_LOG_DIR}/kubectl.log" 2>/dev/null; then
+  pass "create --cni=cilium (stubbed) polls the Kubernetes API /readyz gate before Cilium day-1"
+else
+  fail "expected a stub kubectl /readyz probe: $(cat "${STUB_LOG_DIR}/kubectl.log" 2>/dev/null)"
+fi
+# Talos disables anonymous auth on kube-apiserver, so an unauthenticated
+# probe is answered 401 no matter how ready the cluster is. The gate must go
+# through kubectl with the cluster's own kubeconfig; a curl-based probe sat
+# through its whole budget watching 401s on a fully ready control plane.
+if [[ ! -s "${STUB_LOG_DIR}/curl.log" ]]; then
+  pass "the /readyz gate never probes the API server unauthenticated"
+else
+  fail "the /readyz gate must not use an unauthenticated probe: $(cat "${STUB_LOG_DIR}/curl.log" 2>/dev/null)"
+fi
+
+if [[ -f "${cluster_dir}/patches/cni.patch.yaml" \
+   && -f "${cluster_dir}/patches/cp.patch.yaml" \
+   && -f "${cluster_dir}/patches/worker.patch.yaml" ]]; then
+  pass "create --cni=cilium (stubbed) materializes all three patches into the destination cluster directory"
+else
+  fail "expected a materialized destination patch project at ${cluster_dir}/patches: $(ls -a "${cluster_dir}/patches" 2>/dev/null)"
+fi
+if grep -q "name: none" "${cluster_dir}/patches/cni.patch.yaml" 2>/dev/null \
+   && grep -q "disabled: true" "${cluster_dir}/patches/cni.patch.yaml" 2>/dev/null; then
+  pass "the materialized cni patch carries the default model's CNI-none and kube-proxy-disabled settings"
+else
+  fail "the materialized cni patch lost the default model's content: $(cat "${cluster_dir}/patches/cni.patch.yaml" 2>/dev/null)"
+fi
+if grep -q "create --name=cilium-real" "${cluster_dir}/patches/cni.patch.yaml" 2>/dev/null; then
+  pass "the materialized patch records the cluster it was generated for"
+else
+  fail "the materialized patch has no provenance header: $(cat "${cluster_dir}/patches/cni.patch.yaml" 2>/dev/null)"
+fi
+
+rendered="${cluster_dir}/generated/helm/cilium/rendered.yaml"
+if [[ -s "${rendered}" ]] && ! grep -qE '^(Pulled|Digest): ' "${rendered}"; then
+  pass "the rendered Cilium manifest strips Helm's OCI pull chatter, which would otherwise be a leading apiVersion-less YAML document"
+else
+  fail "the rendered manifest still carries Helm's OCI pull chatter: $(head -3 "${rendered}" 2>/dev/null)"
+fi
+if [[ "$(head -n1 "${rendered}" 2>/dev/null)" == "---" ]]; then
+  pass "the rendered Cilium manifest begins at the first YAML document separator"
+else
+  fail "the rendered manifest does not begin with a document separator: $(head -3 "${rendered}" 2>/dev/null)"
+fi
+
+# --- a failed Cilium day-1 install must abort before the CoreDNS wait -------
+#     bootstrap_cilium_day1 runs as `if ! bootstrap_cilium_day1 ...`, and Bash
+#     disables errexit inside a function called in a condition context. Without
+#     explicit per-step guards a failed Helm render fell through to the CoreDNS
+#     rollout, which then failed with "coredns not found" and masked the real
+#     cause.
+
+reset_logs
+cluster_dir="${STATE_ROOT}/cilium-helm-fail"
+status=0
+output="$(STUB_HELM_FAIL=true STUB_DOCKER_PORT_MAPPING="127.0.0.1:32771" \
+  run_local_cluster create --name=cilium-helm-fail --cni=cilium --gitops-repo-root="${GITOPS_ROOT}" --state-root="${STATE_ROOT}" 2>&1)" || status=$?
+if [[ "${status}" -ne 0 ]]; then
+  pass "create --cni=cilium fails when the Cilium day-1 network bring-up fails"
+else
+  fail "create --cni=cilium should fail when Cilium day-1 fails: ${output}"
+fi
+if ! grep -q -- "rollout status deployment/coredns" "${STUB_LOG_DIR}/kubectl.log" 2>/dev/null; then
+  pass "a failed Cilium day-1 aborts before the CoreDNS wait instead of falling through to it"
+else
+  fail "a failed Cilium day-1 must not reach the CoreDNS rollout wait: $(cat "${STUB_LOG_DIR}/kubectl.log" 2>/dev/null)"
+fi
+if [[ "${output}" == *"network bring-up failed"* ]]; then
+  pass "the reported cause is the Cilium bring-up failure, not a downstream CoreDNS symptom"
+else
+  fail "the failure message should name the Cilium bring-up, not CoreDNS: ${output}"
+fi
+# The marker is an ownership claim, not a success record. A failed day-1 must
+# still leave it -- with state=creating -- or destroy would refuse to clean up
+# the containers and state the failed create left behind.
+if [[ -f "${cluster_dir}/.talos-toolchain-local-cluster" ]]; then
+  pass "the wrapper marker survives a failed Cilium day-1 so destroy can clean up"
+else
+  fail "a failed Cilium day-1 must leave the marker, or the cluster becomes undestroyable"
+fi
+if grep -q '^state=creating$' "${cluster_dir}/.talos-toolchain-local-cluster" 2>/dev/null; then
+  pass "the marker records state=creating after a failed Cilium day-1"
+else
+  fail "the marker should record state=creating, not ready: $(cat "${cluster_dir}/.talos-toolchain-local-cluster" 2>/dev/null)"
+fi
+
+# --- an arbitrary --name gets its own destination patch project, and a
+#     re-created cluster never loses operator edits to it --------------------
+
+reset_logs
+cluster_dir="${STATE_ROOT}/patati-patata"
+status=0
+output="$(STUB_DOCKER_PORT_MAPPING="127.0.0.1:32769" run_local_cluster create --name=patati-patata --cni=cilium --gitops-repo-root="${GITOPS_ROOT}" --state-root="${STATE_ROOT}" 2>&1)" || status=$?
+if [[ "${status}" -eq 0 && -f "${cluster_dir}/patches/cni.patch.yaml" ]]; then
+  pass "create --cni=cilium scaffolds a destination patch project for an arbitrary cluster name"
+else
+  fail "create --name=patati-patata did not scaffold its own patch project (status ${status}): ${output}"
+fi
+if grep -q -- "--config-patch @${cluster_dir}/patches/cni.patch.yaml" "${STUB_LOG_DIR}/talosctl.log" 2>/dev/null; then
+  pass "talosctl receives the arbitrary cluster's own destination patch path"
+else
+  fail "talosctl did not receive ${cluster_dir}/patches/cni.patch.yaml: $(cat "${STUB_LOG_DIR}/talosctl.log" 2>/dev/null)"
+fi
+if [[ ! -e "${STATE_ROOT}/cilium-real/patches/patati-patata" ]] \
+   && grep -q "create --name=patati-patata" "${cluster_dir}/patches/cp.patch.yaml" 2>/dev/null; then
+  pass "each cluster's patch project is independent of every other cluster's"
+else
+  fail "the patati-patata patch project is not independently scoped: $(cat "${cluster_dir}/patches/cp.patch.yaml" 2>/dev/null)"
+fi
+
+# An operator edit must survive a re-create: the destination patch project is
+# the cluster's record of what was applied, not a regenerated cache.
+reset_logs
+printf '\n# operator edit that must survive\n' >> "${cluster_dir}/patches/cni.patch.yaml"
+rm -f "${cluster_dir}/${MARKER_NAME:-.talos-toolchain-local-cluster}"
+status=0
+output="$(STUB_DOCKER_PORT_MAPPING="127.0.0.1:32769" run_local_cluster create --name=patati-patata --cni=cilium --gitops-repo-root="${GITOPS_ROOT}" --state-root="${STATE_ROOT}" 2>&1)" || status=$?
+if grep -q "operator edit that must survive" "${cluster_dir}/patches/cni.patch.yaml" 2>/dev/null; then
+  pass "re-running create never overwrites an existing destination patch file"
+else
+  fail "re-running create discarded an operator edit to the destination patch project: ${output}"
+fi
+if [[ "${output}" == *"Keeping existing patch"* ]]; then
+  pass "re-running create reports that it kept the existing destination patches"
+else
+  fail "re-running create did not report keeping the existing patches: ${output}"
+fi
+
+# --- Kubernetes API /readyz gate failure: create fails, state is retained
+#     for diagnostics instead of being auto-destroyed, and Cilium day-1 must
+#     never start (the gate exists precisely to block it) -------------------
+
+reset_logs
+cluster_dir="${STATE_ROOT}/cilium-readyz-fail"
+status=0
+output="$(TALOS_LOCAL_CLUSTER_API_READYZ_WAIT_SECONDS=1 STUB_KUBECTL_READYZ_FAIL=true STUB_DOCKER_PORT_MAPPING="127.0.0.1:32770" \
+  run_local_cluster create --name=cilium-readyz-fail --cni=cilium --gitops-repo-root="${GITOPS_ROOT}" --state-root="${STATE_ROOT}" 2>&1)" || status=$?
+if [[ "${status}" -ne 0 && "${output}" == *"/readyz"* ]]; then
+  pass "create --cni=cilium fails when the Kubernetes API /readyz gate never passes"
+else
+  fail "create --cni=cilium should fail with a /readyz-referencing message when the gate never passes: ${output}"
+fi
+if [[ ! -s "${STUB_LOG_DIR}/helm.log" ]]; then
+  pass "Cilium day-1 never starts when the /readyz gate fails"
+else
+  fail "Cilium day-1 must not start before the /readyz gate passes: $(cat "${STUB_LOG_DIR}/helm.log" 2>/dev/null)"
+fi
+if [[ -d "${cluster_dir}/talos-state" ]]; then
+  pass "create --cni=cilium leaves Talos state in place for diagnostics on /readyz gate failure (no auto-destroy)"
+else
+  fail "create --cni=cilium must retain state on /readyz gate failure, not clean up automatically"
+fi
+if grep -q '^state=creating$' "${cluster_dir}/.talos-toolchain-local-cluster" 2>/dev/null; then
+  pass "the marker records state=creating when the /readyz gate fails, keeping the cluster destroyable"
+else
+  fail "a failed /readyz gate must leave a state=creating marker: $(cat "${cluster_dir}/.talos-toolchain-local-cluster" 2>/dev/null)"
+fi
+
 # --- published API port discovery failure: create fails, state is retained
 #     for diagnostics instead of being auto-destroyed ------------------------
 
@@ -316,10 +528,10 @@ if [[ -d "${cluster_dir}/talos-state" ]]; then
 else
   fail "create --cni=cilium must retain state on failure, not clean up automatically"
 fi
-if [[ ! -f "${cluster_dir}/.talos-toolchain-local-cluster" ]]; then
-  pass "create --cni=cilium never writes the wrapper marker when it fails before completion"
+if grep -q '^state=creating$' "${cluster_dir}/.talos-toolchain-local-cluster" 2>/dev/null; then
+  pass "create --cni=cilium never promotes the marker to ready when it fails before completion"
 else
-  fail "the wrapper marker must not be written on a failed create"
+  fail "a create that fails before completion must leave a state=creating marker: $(cat "${cluster_dir}/.talos-toolchain-local-cluster" 2>/dev/null)"
 fi
 
 # --- async supervision: talosctl cluster create docker blocks on cluster
@@ -407,10 +619,10 @@ if [[ "${output}" == *"talosctl cluster create docker failed"* ]]; then
 else
   fail "expected a diagnostic mentioning the backgrounded create failure: ${output}"
 fi
-if [[ ! -f "${cluster_dir}/.talos-toolchain-local-cluster" ]]; then
-  pass "async create never writes the success marker when the backgrounded create ultimately fails"
+if grep -q '^state=creating$' "${cluster_dir}/.talos-toolchain-local-cluster" 2>/dev/null; then
+  pass "async create never promotes the marker to ready when the backgrounded create ultimately fails"
 else
-  fail "the wrapper marker must not be written when the backgrounded create fails"
+  fail "a failed backgrounded create must leave a state=creating marker: $(cat "${cluster_dir}/.talos-toolchain-local-cluster" 2>/dev/null)"
 fi
 if grep -q "template" "${STUB_LOG_DIR}/helm.log" 2>/dev/null; then
   pass "Cilium day-1 still bootstraps even though the backgrounded create later reports failure (its failure is only propagated after)"
@@ -462,10 +674,10 @@ if [[ -d "${cluster_dir}/talos-state" ]]; then
 else
   fail "an unexpected mid-flow failure must retain state, not clean up automatically"
 fi
-if [[ ! -f "${cluster_dir}/.talos-toolchain-local-cluster" ]]; then
-  pass "an unexpected mid-flow failure never writes the success marker"
+if grep -q '^state=creating$' "${cluster_dir}/.talos-toolchain-local-cluster" 2>/dev/null; then
+  pass "an unexpected mid-flow failure never promotes the marker to ready"
 else
-  fail "the wrapper marker must not be written when an unexpected mid-flow failure occurs"
+  fail "an unexpected mid-flow failure must leave a state=creating marker: $(cat "${cluster_dir}/.talos-toolchain-local-cluster" 2>/dev/null)"
 fi
 
 echo ""

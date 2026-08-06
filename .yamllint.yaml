@@ -5,6 +5,16 @@
 # wholesale.
 extends: default
 
+# Fixtures under scripts/talos/tests/fixtures/render/ are captured
+# `helm template` output, not YAML authored in this repository. They are a
+# multi-document manifest stream, so the "---" separators this policy forbids
+# are structurally required, and the list indentation is Helm's own.
+# Reformatting them to satisfy a style rule would make them stop matching what
+# the real tool emits — which is the whole point of a fixture. Style is
+# checked on YAML this repository writes; recorded tool output is exempt.
+ignore: |
+  scripts/talos/tests/fixtures/render/
+
 rules:
   line-length:
     # GitHub issue-form "dropdown" options are a single flow-sequence line;

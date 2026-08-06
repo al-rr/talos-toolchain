@@ -26,6 +26,7 @@ fi
 # bool). Adding a configuration field means adding one row here. Unknown or
 # type-mismatched keys are rejected.
 TALOS_CONFIG_SCHEMA_TABLE="cluster.name|TALOS_CLUSTER_NAME|str
+cluster.environment|TALOS_CLUSTER_ENVIRONMENT|str
 cluster.endpoint|TALOS_CLUSTER_ENDPOINT|str
 vsphere.endpoint|VSPHERE_ENDPOINT|str
 vsphere.username|VSPHERE_USERNAME|str
@@ -533,6 +534,28 @@ _talos_config_export_from_file() {
       export "${env_var}=${value}"
     fi
   done <<< "${table_value}"
+}
+
+# @description Reads a single dotted path from a config file, before the full
+#   layered load runs. Needed for exactly one bootstrapping problem: the
+#   environment name must be known in order to load the environment layer, and
+#   a project declares which environment it belongs to inside its own
+#   config.yaml. Applies the same secure-file check as the full loader; prints
+#   nothing when the file is absent or the key is unset.
+# @arg $1 file Config file to read.
+# @arg $2 path Dotted YAML path, for example "cluster.environment".
+talos_config_read_field() {
+  local file="$1"
+  local path="$2"
+  local value=""
+
+  [[ -f "${file}" ]] || return 0
+  talos_config_check_file_secure "${file}" || die "Refusing to read insecure config: ${file}"
+  talos_config_require_yq
+
+  value="$(yq eval ".${path} // \"\"" "${file}" 2>/dev/null)"
+  [[ -n "${value}" && "${value}" != "null" ]] || return 0
+  printf '%s\n' "${value}"
 }
 
 # @description Loads defaults, base YAML, project intent (non-secret), the

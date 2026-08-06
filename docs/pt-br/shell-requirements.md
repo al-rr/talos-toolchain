@@ -40,6 +40,12 @@ Uma segunda falha nao resolvida (por exemplo, uma instalacao quebrada do
 Bash do Homebrew) e detectada e recusada, em vez de causar um loop de
 reexecucao.
 
+Para instalar o Bash 5 — junto com o restante das ferramentas de host do
+macOS — use o `scripts/host/setup-macos.sh`, que e opcional e explicito (veja
+`docs/pt-br/host-setup.md`). Ele e uma acao separada do operador: o preflight
+acima continua apenas diagnosticando, e nenhum entrypoint de ciclo de vida
+chama o script de setup.
+
 ## Preflight de CLIs
 
 Cada entrypoint tambem verifica, conforme a acao selecionada, se os comandos

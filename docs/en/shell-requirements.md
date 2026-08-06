@@ -38,6 +38,11 @@ Bash-5-only code path runs:
 A second, unresolved failure (e.g. a broken Homebrew Bash install) is
 detected and refused rather than causing a re-exec loop.
 
+To install Bash 5 — along with the rest of the macOS host tooling — use the
+opt-in `scripts/host/setup-macos.sh` (see `docs/en/host-setup.md`). It is a
+separate, explicit operator action: the preflight above still only diagnoses,
+and no lifecycle entrypoint ever invokes the setup script.
+
 ## CLI preflight
 
 Each entrypoint also checks, per selected action, that the external commands

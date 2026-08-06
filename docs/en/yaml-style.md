@@ -22,9 +22,27 @@ files require:
 
 No rule is disabled wholesale.
 
+## Recorded tool output is exempt
+
+`scripts/talos/tests/fixtures/render/` is excluded via the policy's `ignore`
+list. Those files are captured `helm template` output, not YAML authored here:
+they are a multi-document manifest stream, so the `---` separators the policy
+forbids are structurally required, and the list indentation is Helm's own.
+Reformatting a fixture to satisfy a style rule would make it stop matching
+what the real tool emits, which defeats its purpose. Style is enforced on YAML
+this repository writes; the exemption is scoped to that one directory and
+every other fixture is still linted.
+
 ## Local usage
 
-Install `yamllint` (any one of):
+On macOS, install the whole host tooling set at once (see
+`docs/en/host-setup.md`):
+
+```bash
+./scripts/host/setup-macos.sh install
+```
+
+Or install `yamllint` alone (any one of):
 
 ```bash
 pipx install yamllint

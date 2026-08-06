@@ -28,6 +28,7 @@ same local-first boundary.
 
 ## Available Guides
 
+- macOS host tooling setup (`scripts/host/setup-macos.sh`): `docs/en/host-setup.md`
 - Day-1 project variables: `docs/en/day1-project-vars.md`
 - XDG YAML environment configuration (`config.sh`): `docs/en/environment-config.md`
 - Shell requirements (Bash 5 / macOS preflight contract): `docs/en/shell-requirements.md`

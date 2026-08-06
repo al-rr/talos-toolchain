@@ -124,6 +124,25 @@ else
   fail "create should resolve the Colima Docker socket by default: ${output}"
 fi
 
+# Real Colima prints the socket inside a logfmt line ('msg="docker socket:
+# unix://..."'), not as a bare 'docker: <uri>' field. Both styles must parse,
+# and the captured path must never swallow the quote that closes the msg=
+# field -- a parser that only handled the bare form failed against the real
+# binary while every stubbed test still passed.
+reset_logs
+status=0
+output="$(STUB_COLIMA_STATUS_FORMAT=plain run_local_cluster create --name=endpoint-colima-plain --state-root="${STATE_ROOT}" --dry-run 2>&1)" || status=$?
+if [[ "${status}" -eq 0 && "${output}" == *"DOCKER_HOST=unix://${FAKE_COLIMA_SOCKET}"* ]]; then
+  pass "create also resolves the Colima Docker socket from the plainer 'docker: <uri>' status form"
+else
+  fail "create should resolve the Colima socket from the plain status form too: ${output}"
+fi
+if [[ "${output}" != *"${FAKE_COLIMA_SOCKET}\""* ]]; then
+  pass "the resolved Colima socket path never includes the logfmt closing quote"
+else
+  fail "the resolved Colima socket path captured a trailing quote: ${output}"
+fi
+
 # --- Docker endpoint resolution: --docker-endpoint takes precedence over Colima ---
 
 reset_logs
@@ -211,6 +230,11 @@ if [[ -f "${cluster_dir}/.talos-toolchain-local-cluster" ]]; then
   pass "create (stubbed) writes the wrapper marker"
 else
   fail "create (stubbed) did not write a marker at ${cluster_dir}/.talos-toolchain-local-cluster"
+fi
+if grep -q '^state=ready$' "${cluster_dir}/.talos-toolchain-local-cluster" 2>/dev/null; then
+  pass "a successful create promotes the marker to state=ready"
+else
+  fail "a successful create must record state=ready: $(cat "${cluster_dir}/.talos-toolchain-local-cluster" 2>/dev/null)"
 fi
 
 if [[ -f "${cluster_dir}/kubeconfig" ]]; then
@@ -380,8 +404,18 @@ fi
 
 # --- destroy (stubbed) with --confirm-destroy actually tears down and cleans up ---
 
+reset_logs
 status=0
 output="$(run_local_cluster destroy --name=real-cluster --state-root="${STATE_ROOT}" --confirm-destroy 2>&1)" || status=$?
+# talosctl talks to Docker itself. Without the resolved endpoint it reaches for
+# /var/run/docker.sock, which does not exist on a Colima host, and the destroy
+# aborts before the state directory is removed -- leaving exactly the orphaned
+# cluster the marker fix exists to prevent.
+if grep -q "^DOCKER_HOST=unix://${FAKE_COLIMA_SOCKET}$" "${STUB_LOG_DIR}/talosctl.log" 2>/dev/null; then
+  pass "destroy passes the resolved Docker endpoint to talosctl"
+else
+  fail "destroy must not invoke talosctl with the default socket: $(grep '^DOCKER_HOST=' "${STUB_LOG_DIR}/talosctl.log" 2>/dev/null)"
+fi
 if [[ "${status}" -eq 0 ]]; then
   pass "destroy --confirm-destroy (stubbed) exits 0"
 else
@@ -391,6 +425,56 @@ if [[ ! -d "${cluster_dir}" ]]; then
   pass "destroy --confirm-destroy (stubbed) removes the isolated cluster directory"
 else
   fail "destroy --confirm-destroy (stubbed) should remove ${cluster_dir}"
+fi
+
+# --- destroy cleans up after an interrupted create (state=creating) ---
+#
+# A create killed mid-flight -- what the EXIT trap produces when Cilium day-1
+# fails -- used to leave containers and state behind with no marker, so destroy
+# refused to act and the only way out was a manual docker rm plus rm -rf. The
+# marker is now written before the backend runs, so this must be destroyable.
+
+interrupted_dir="${STATE_ROOT}/interrupted-cluster"
+mkdir -p "${interrupted_dir}/talos-state"
+cat > "${interrupted_dir}/.talos-toolchain-local-cluster" <<'MARKER'
+name=interrupted-cluster
+created_at=2026-08-05T00:00:00Z
+cni=cilium
+state=creating
+MARKER
+status=0
+output="$(run_local_cluster destroy --name=interrupted-cluster --state-root="${STATE_ROOT}" --confirm-destroy 2>&1)" || status=$?
+if [[ "${status}" -eq 0 ]]; then
+  pass "destroy cleans up a cluster left behind by an interrupted create"
+else
+  fail "destroy must handle a state=creating marker: ${output}"
+fi
+if [[ ! -d "${interrupted_dir}" ]]; then
+  pass "destroy removes the interrupted cluster's directory"
+else
+  fail "destroy should have removed ${interrupted_dir}"
+fi
+if [[ "${output}" == *"unfinished create"* ]]; then
+  pass "destroy says it is tearing down a partially created cluster"
+else
+  fail "destroy should warn that the create never finished: ${output}"
+fi
+
+# --- a marker predating state tracking is still destroyable ---
+
+legacy_dir="${STATE_ROOT}/legacy-cluster"
+mkdir -p "${legacy_dir}/talos-state"
+cat > "${legacy_dir}/.talos-toolchain-local-cluster" <<'MARKER'
+name=legacy-cluster
+created_at=2026-08-04T00:00:00Z
+cni=flannel
+MARKER
+status=0
+output="$(run_local_cluster destroy --name=legacy-cluster --state-root="${STATE_ROOT}" --confirm-destroy 2>&1)" || status=$?
+if [[ "${status}" -eq 0 && ! -d "${legacy_dir}" ]]; then
+  pass "destroy still accepts a marker written before state tracking existed"
+else
+  fail "a stateless marker must remain destroyable (status ${status}): ${output}"
 fi
 
 # --- create preflight failure: unresponsive Docker daemon blocks create ---

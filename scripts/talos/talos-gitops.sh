@@ -52,7 +52,9 @@ EXCLUDE_ADDONS_RAW=""
 SYSTEM_EXCLUDE_ADDONS_RAW="cilium"
 KUBECONFIG_PATH=""
 KUBE_CONTEXT=""
-CILIUM_ROLLOUT_TIMEOUT="300s"
+# See phase-network-bringup.sh for the measurement behind this default: on a
+# cold image cache the Cilium image pulls, not Cilium itself, set the duration.
+CILIUM_ROLLOUT_TIMEOUT="900s"
 DRY_RUN="false"
 KNOWN_WARNINGS_REGEX='(Warning: unrecognized format "int64"|warnings\.go:[0-9]+] "Warning: unrecognized format \\"int64\\"")'
 
@@ -75,7 +77,9 @@ Options:
   --exclude-addons=<list>        CSV/JSON-like addons to skip in install-platform-helm (merged with system excludes)
   --kubeconfig=<path>            Kubeconfig path override (default: KUBECONFIG or ~/.kube/config)
   --kube-context=<name>          Kubernetes context to execute against (required)
-  --cilium-rollout-timeout=<dur> Timeout for Cilium rollout wait when cilium CLI is unavailable (default: 300s)
+  --cilium-rollout-timeout=<dur> Timeout for Cilium rollout wait when cilium CLI is unavailable (default: 900s).
+                         Sized for a cold image cache; expiry is a timeout,
+                         not a failed install.
   -n, --dry-run                  Print actions without executing
   -h, --help                     Show help
 
@@ -238,11 +242,46 @@ resolve_values_file_path() {
   return 1
 }
 
+# Collect every namespace the rendered bundle declares for itself. See the
+# matching comment in phase-network-bringup.sh: a chart may default a namespace
+# the values never mention (Cilium renders Namespace/cilium-secrets plus
+# namespaced RBAC inside it), and server-side dry-run creates nothing, so those
+# resources fail validation unless the namespace already exists.
+collect_render_namespaces() {
+  local render_path="$1"
+  awk '
+    function flush() {
+      if (kind == "Namespace" && name != "") { print name }
+      kind = ""; name = ""; in_meta = 0
+    }
+    /^---[[:space:]]*$/ { flush(); next }
+    /^kind:[[:space:]]/ {
+      kind = $0
+      sub(/^kind:[[:space:]]*/, "", kind)
+      gsub(/["\r]/, "", kind)
+      next
+    }
+    /^metadata:[[:space:]]*$/ { in_meta = 1; next }
+    in_meta && /^[[:space:]]+name:[[:space:]]/ {
+      if (name == "") {
+        name = $0
+        sub(/^[[:space:]]*name:[[:space:]]*/, "", name)
+        gsub(/["\r]/, "", name)
+      }
+      next
+    }
+    in_meta && /^[^[:space:]]/ { in_meta = 0 }
+    END { flush() }
+  ' "${render_path}" | sort -u
+}
+
 collect_cilium_secret_namespaces() {
   local values_path="$1"
+  # POSIX classes, not \s: the macOS awk does not support \s and silently
+  # matched only an unindented key, so nested values never resolved.
   awk '
-    /^\s*secretsNamespace:\s*$/ { in_block=1; next }
-    in_block && /^\s*name:\s*/ {
+    /^[[:space:]]*secretsNamespace:[[:space:]]*$/ { in_block=1; next }
+    in_block && /^[[:space:]]*name:[[:space:]]*/ {
       ns=$0
       sub(/^[[:space:]]*name:[[:space:]]*/, "", ns)
       gsub(/"/, "", ns)
@@ -418,8 +457,14 @@ install_single_addon() {
   fi
 
   if [[ "${addon}" == "cilium" ]]; then
-    mapfile -t extra_namespaces < <(collect_cilium_secret_namespaces "${values_file}")
+    mapfile -t extra_namespaces < <(
+      {
+        collect_render_namespaces "${render_file}"
+        collect_cilium_secret_namespaces "${values_file}"
+      } | sort -u
+    )
     for ns in "${extra_namespaces[@]}"; do
+      [[ -n "${ns}" ]] || continue
       [[ "${ns}" == "${namespace}" ]] && continue
       ensure_namespace "${kubeconfig_file}" "${ns}"
     done
@@ -470,7 +515,7 @@ install_single_addon() {
       else
         log_warn "cilium CLI not found; waiting daemonset/cilium rollout via kubectl (${CILIUM_ROLLOUT_TIMEOUT})"
         if ! KUBECONFIG="${kubeconfig_file}" kubectl --context="${KUBE_CONTEXT}" -n "${namespace}" rollout status daemonset/cilium --timeout="${CILIUM_ROLLOUT_TIMEOUT}"; then
-          log_warn "Cilium rollout timed out; continue monitoring manually."
+          log_warn "Cilium rollout not ready within ${CILIUM_ROLLOUT_TIMEOUT}. This is a timeout, not a failure: on a cold image cache the pulls can take longer. Check pod status before treating it as broken, and raise --cilium-rollout-timeout if this host is consistently slow."
         fi
       fi
     fi

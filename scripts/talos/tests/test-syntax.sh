@@ -9,6 +9,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TALOS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+SCRIPTS_DIR="$(cd "${TALOS_DIR}/.." && pwd)"
 
 TARGETS=(
   "${TALOS_DIR}/lib/bash-preflight.sh"
@@ -29,6 +30,9 @@ TARGETS=(
   "${TALOS_DIR}/validate-cilium-handoff.sh"
   "${TALOS_DIR}/vars.sh"
   "${TALOS_DIR}/tests/test-local-cluster-cilium.sh"
+  "${TALOS_DIR}/tests/test-cluster-patch-model.sh"
+  "${TALOS_DIR}/tests/test-environment-resolution.sh"
+  "${SCRIPTS_DIR}/host/setup-macos.sh"
 )
 
 FAIL_COUNT=0
@@ -54,7 +58,23 @@ SHELLCHECK_TARGETS=(
   "${TALOS_DIR}/config.sh"
   "${TALOS_DIR}/talos-gitops.sh"
   "${TALOS_DIR}/validate-cilium-handoff.sh"
+  "${SCRIPTS_DIR}/host/setup-macos.sh"
 )
+
+# setup-macos.sh installs Bash 5, so it must itself parse under macOS's stock
+# Bash 3.2. The generic `bash -n` above runs under whatever Bash is on PATH,
+# which on a configured host is already Bash 5 and would not catch a Bash 4+
+# construct sneaking in. Check it explicitly against the system Bash.
+if [[ "$(uname -s)" == "Darwin" && -x /bin/bash ]]; then
+  if /bin/bash -n "${SCRIPTS_DIR}/host/setup-macos.sh"; then
+    echo "[PASS] /bin/bash -n (Bash 3.2 compatibility) host/setup-macos.sh"
+  else
+    echo "[FAIL] /bin/bash -n (Bash 3.2 compatibility) host/setup-macos.sh"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  fi
+else
+  echo "[SKIP] Bash 3.2 compatibility check (not macOS)"
+fi
 
 if command -v shellcheck >/dev/null 2>&1; then
   if shellcheck "${SHELLCHECK_TARGETS[@]}"; then

@@ -50,7 +50,12 @@ RENDER_ONLY="false"
 KUBECONFIG_PATH=""
 HELM_ROOT=""
 RENDER_DIR_OVERRIDE=""
-CILIUM_ROLLOUT_TIMEOUT="300s"
+# Cold-cache image pulls dominate this wait, not Cilium's own startup. A
+# measured local run pulled ~1.5 GB across six images concurrently through one
+# Colima VM; the operator alone reported totalImagesPullingTime 9m42s. At 300s
+# the wait expired with everything still healthy and merely pulling, which
+# reads as a failure to an operator. 900s covers a cold pull with margin.
+CILIUM_ROLLOUT_TIMEOUT="900s"
 
 usage() {
   cat <<EOF_USAGE
@@ -72,7 +77,9 @@ Options:
   --helm-root=<path>             Use this helm manifest root directly instead of a vSphere
                                   project dir/vars file. Mutually exclusive with --project-dir.
   --render-dir=<path>            Render output directory (required with --helm-root)
-  --cilium-rollout-timeout=<dur> Timeout for Cilium rollout wait when cilium CLI is unavailable (default: 300s)
+  --cilium-rollout-timeout=<dur> Timeout for Cilium rollout wait when cilium CLI is unavailable (default: 900s).
+                         Sized for a cold image cache; expiry is a timeout,
+                         not a failed install.
   --render-only                  Stop before helm upgrade --install
   -n, --dry-run                  Print actions without executing
   -h, --help                     Show help
@@ -175,11 +182,47 @@ run_or_echo() {
   "$@"
 }
 
+# Collect every namespace the rendered bundle declares for itself.
+#
+# The values file is not a reliable source: a chart may default a namespace
+# that the values never mention. Cilium does exactly this — enabling
+# ingress/gateway/policy secrets sync without naming a namespace renders
+# Namespace/cilium-secrets plus namespaced RBAC inside it. Server-side dry-run
+# creates nothing, so those resources fail validation unless the namespace
+# already exists. The render is authoritative and is already on disk here.
+collect_render_namespaces() {
+  local render_path="$1"
+  awk '
+    function flush() {
+      if (kind == "Namespace" && name != "") { print name }
+      kind = ""; name = ""; in_meta = 0
+    }
+    /^---[[:space:]]*$/ { flush(); next }
+    /^kind:[[:space:]]/ {
+      kind = $0
+      sub(/^kind:[[:space:]]*/, "", kind)
+      gsub(/["\r]/, "", kind)
+      next
+    }
+    /^metadata:[[:space:]]*$/ { in_meta = 1; next }
+    in_meta && /^[[:space:]]+name:[[:space:]]/ {
+      if (name == "") {
+        name = $0
+        sub(/^[[:space:]]*name:[[:space:]]*/, "", name)
+        gsub(/["\r]/, "", name)
+      }
+      next
+    }
+    in_meta && /^[^[:space:]]/ { in_meta = 0 }
+    END { flush() }
+  ' "${render_path}" | sort -u
+}
+
 collect_cilium_secret_namespaces() {
   local values_path="$1"
   awk '
-    /^\s*secretsNamespace:\s*$/ { in_block=1; next }
-    in_block && /^\s*name:\s*/ {
+    /^[[:space:]]*secretsNamespace:[[:space:]]*$/ { in_block=1; next }
+    in_block && /^[[:space:]]*name:[[:space:]]*/ {
       ns=$0
       sub(/^[[:space:]]*name:[[:space:]]*/, "", ns)
       gsub(/"/, "", ns)
@@ -336,11 +379,22 @@ main() {
     log_info "[DRY-RUN] helm template ${release_name} ${chart} --version ${version} --namespace ${namespace} --create-namespace -f ${values_file} > ${render_file}"
   else
     mkdir -p "${render_dir}"
+    # When the chart comes from an OCI registry, Helm prints its pull progress
+    # ("Pulled: <ref>" / "Digest: sha256:...") on stdout, ahead of the
+    # manifest. Left in place those lines parse as a leading YAML document
+    # with neither apiVersion nor kind, and the mandatory server-side dry-run
+    # below rejects the entire render with "apiVersion not set, kind not set"
+    # -- a confusing failure that has nothing to do with the chart. Strip that
+    # chatter, but only where it occurs (the very top), so no real manifest
+    # content can ever be dropped.
     helm template "${release_name}" "${chart}" \
       --version "${version}" \
       --namespace "${namespace}" \
       --create-namespace \
-      -f "${values_file}" > "${render_file}"
+      -f "${values_file}" \
+      | awk 'BEGIN { in_header = 1 }
+             in_header && /^(Pulled|Digest): / { next }
+             { in_header = 0; print }' > "${render_file}"
     [[ -s "${render_file}" ]] || die "Rendered file is empty: ${render_file}"
   fi
 
@@ -350,8 +404,14 @@ main() {
   label_namespace_security "${kubeconfig_file}" "${namespace}" \
     "${namespace_label_enforce}" "${namespace_label_audit}" "${namespace_label_warn}"
   if [[ "${ADDON_NAME}" == "cilium" ]]; then
-    mapfile -t extra_namespaces < <(collect_cilium_secret_namespaces "${values_file}")
+    mapfile -t extra_namespaces < <(
+      {
+        collect_render_namespaces "${render_file}"
+        collect_cilium_secret_namespaces "${values_file}"
+      } | sort -u
+    )
     for ns in "${extra_namespaces[@]}"; do
+      [[ -n "${ns}" ]] || continue
       [[ "${ns}" == "${namespace}" ]] && continue
       if [[ "${DRY_RUN}" == "true" ]]; then
         ensure_namespace "${kubeconfig_file}" "${ns}"
@@ -423,7 +483,7 @@ main() {
       log_warn "cilium CLI not found; skipping 'cilium status --wait'."
       log_info "Waiting for DaemonSet/cilium rollout via kubectl (timeout: ${CILIUM_ROLLOUT_TIMEOUT})."
       if ! KUBECONFIG="${kubeconfig_file}" kubectl -n "${namespace}" rollout status daemonset/cilium --timeout="${CILIUM_ROLLOUT_TIMEOUT}"; then
-        log_warn "Cilium rollout not ready before timeout; continue monitoring with the commands below."
+        log_warn "Cilium rollout not ready within ${CILIUM_ROLLOUT_TIMEOUT}. This is a timeout, not a failure: on a cold image cache the Cilium images can take longer to pull. Check the pod status below before treating it as broken, and raise --cilium-rollout-timeout if this host is consistently slow."
       fi
     fi
   fi
@@ -439,4 +499,7 @@ main() {
   log_info "Network Bring-up phase completed for addon '${ADDON_NAME}' in cluster '${CLUSTER_NAME}'."
 }
 
-main "$@"
+# Only run when executed; sourcing exposes the functions for unit tests.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi

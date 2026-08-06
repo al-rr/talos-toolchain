@@ -86,6 +86,7 @@ example:
 | YAML path | Environment variable |
 | --- | --- |
 | `cluster.name` | `TALOS_CLUSTER_NAME` |
+| `cluster.environment` | `TALOS_CLUSTER_ENVIRONMENT` |
 | `cluster.endpoint` | `TALOS_CLUSTER_ENDPOINT` |
 | `vsphere.endpoint` | `VSPHERE_ENDPOINT` |
 | `ssh.user` | `SSH_USER` |
@@ -118,9 +119,8 @@ Values are applied in this order, later layers overriding earlier ones:
 `cluster.sh` sources legacy `vars.sh`/`vars.local.sh` first (compatibility
 layer only) and then calls this loader, so the YAML environment/credentials
 layers always win over anything legacy sets — legacy values never override
-the resolved YAML configuration. `--environment=<name>` (default: the
-project/cluster name) selects the environment, and the project's own
-`config.yaml` (if present) is passed in as tracked intent. `cluster.sh`
+the resolved YAML configuration. The project's own `config.yaml` (if present)
+is passed in as tracked intent. `cluster.sh`
 requires `yq` for every action except `create-project` (which stays fully
 offline); it fails with an actionable error rather than silently skipping the
 YAML layer when `yq` is missing.
@@ -129,6 +129,40 @@ Environment names are restricted to a single, safe path component
 (`[A-Za-z0-9][A-Za-z0-9._-]*`): empty names, slashes, dot-only names (`.`,
 `..`), and any other path-traversal-shaped input are rejected before any
 path is built from them.
+
+## A cluster and its environment are different identities
+
+Several clusters normally share one environment, so the environment is never
+derived from the cluster's name. It resolves in this order:
+
+1. `--environment=<name>` on the command line, for a one-run override.
+2. `cluster.environment` in the project's own tracked `config.yaml`.
+3. `lab`.
+
+Two clusters reading the same environment is the normal case, not an
+exception:
+
+```yaml
+# clusters/cluster-lab/config.yaml
+cluster:
+  name: "cluster-lab"          # container-backed
+  environment: "lab"
+
+# clusters/cluster-lab-vmware/config.yaml
+cluster:
+  name: "cluster-lab-vmware"   # vSphere, 3 control planes, 3 workers, HAProxy
+  environment: "lab"
+```
+
+Both read the same `environments/lab/config.yaml` and
+`environments/lab/credentials.yaml` — one set of endpoints, networks and
+credentials, shared. What differs between them belongs in each project, not in
+duplicated environment values.
+
+Earlier versions defaulted the environment to the cluster name, which sent
+every cluster looking for an environment named after itself and silently
+finding none. A project created before `cluster.environment` existed falls
+back to `lab` rather than to its own name.
 
 ## Redacted diagnostics
 
