@@ -14,7 +14,9 @@ YAMLLINT_CONFIG="${REPO_ROOT}/.yamllint.yaml"
 
 if ! command -v yamllint >/dev/null 2>&1; then
   echo "[FAIL] yamllint is not installed or not on PATH." >&2
-  echo "Install it with one of:" >&2
+  echo "On macOS, install the full host tooling set with:" >&2
+  echo "  ./scripts/host/setup-macos.sh install" >&2
+  echo "Or install just yamllint with one of:" >&2
   echo "  pipx install yamllint" >&2
   echo "  pip install --user yamllint" >&2
   echo "  brew install yamllint" >&2

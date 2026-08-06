@@ -23,9 +23,29 @@ reais deste repositorio exigem:
 
 Nenhuma regra e desabilitada por completo.
 
+## Saida de ferramenta gravada e isenta
+
+O diretorio `scripts/talos/tests/fixtures/render/` e excluido pela lista
+`ignore` da politica. Aqueles arquivos sao saida capturada de
+`helm template`, e nao YAML escrito aqui: formam um fluxo de multiplos
+documentos, entao os separadores `---` que a politica proibe sao
+estruturalmente obrigatorios, e a indentacao das listas e a do proprio Helm.
+Reformatar um fixture para satisfazer uma regra de estilo faria com que ele
+deixasse de corresponder ao que a ferramenta real emite, o que anula seu
+proposito. O estilo e aplicado ao YAML que este repositorio escreve; a isencao
+se limita a esse unico diretorio e todos os demais fixtures continuam sendo
+verificados.
+
 ## Uso local
 
-Instale o `yamllint` (qualquer uma das opcoes):
+No macOS, instale todo o conjunto de ferramentas de host de uma vez (veja
+`docs/pt-br/host-setup.md`):
+
+```bash
+./scripts/host/setup-macos.sh install
+```
+
+Ou instale apenas o `yamllint` (qualquer uma das opcoes):
 
 ```bash
 pipx install yamllint
