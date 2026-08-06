@@ -2,8 +2,8 @@
 
 - Iteration: 16 — local cluster lifecycle contract (`talos-lab` as first consumer)
 - Repository: `talos-toolchain`
-- Status: `IMPLEMENTED` and committed; live-validated (pending independent
-  review of the committed range)
+- Status: `COMPLETE` — implemented, committed, live-validated, and
+  independently reviewed on the committed range
 - Base branch: `lab`
 - Baseline commit: `e66b26f1fd34b1db0b8aad2fa3a8905464838195`
 - Working branch: `fix/iteration-015-local-cilium-lifecycle`
@@ -324,12 +324,35 @@ three places, all of which the reviewer should judge explicitly:
 ## Independent review
 
 - Reviewer: Codex
-- Exact commit reviewed: pre-commit working tree (not the committed range)
-- Diff range: pending for `289f53a..6bdbe87`
-- Checks rerun: pending
-- Verdict: `CORRECTIONS_REQUIRED` — **rejected, see below**
-- Corrections requested: 1, not applied
-- Follow-up work: an independent review of the committed range is still owed.
+- Exact commit reviewed: `fdbe8bd`
+- Diff range: `289f53a..fdbe8bd`
+- Checks rerun: the 10 offline scripts under `scripts/talos/tests/`.
+  `test-local-cluster-cilium.sh` could not run in the reviewer's sandbox (see
+  below); the other nine passed there, and all ten pass outside a sandbox.
+- Verdict: `APPROVED`
+- Corrections requested: none on the committed range.
+- Follow-up work: Helm values deserve the same model→materialize treatment
+  that `cluster-patches/` received. Tracked separately, not part of this
+  iteration.
+
+### An earlier review of the pre-commit tree was rejected
+
+A prior cycle reviewed the working tree before these commits and returned
+`CORRECTIONS_REQUIRED` with one finding, which was rejected as incorrect and
+not applied. It is preserved below because the reasoning matters.
+
+### `test-local-cluster-cilium.sh` cannot run under a sandbox
+
+The test binds a real `AF_UNIX` socket in `/tmp`
+(`test-local-cluster-cilium.sh:53-62`) so `require_valid_docker_socket` has a
+genuine socket to validate without a live Colima or Docker process. Sandboxes
+routinely block that syscall, which surfaces as
+`PermissionError: [Errno 1] Operation not permitted` — EPERM from `bind()`,
+not a defect in the test. Outside a sandbox it passes 67/67.
+
+This will recur on every sandboxed review. Either grant the reviewer's
+environment socket permission, or exclude this one script from the set the
+reviewer is asked to run; the other nine need no socket.
 
 ### The one requested correction was rejected as incorrect
 
@@ -350,7 +373,7 @@ reads `CLAUDE_AUTH_REQUIRED`, so no attempt was made to apply it.
 
 ## Owner decision
 
-- Accepted for local `lab`: pending
+- Accepted for local `lab`: yes — merged to `lab` after the `APPROVED` verdict
 - Patch directory location: decided — flat, repository-root `cluster-patches/`
 - Live `create` authorization: granted 2026-08-05; see "Live validation" above
 - Remote publication authorized: no
