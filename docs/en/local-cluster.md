@@ -98,11 +98,15 @@ string. They come from a maintained, Cilium-focused default model in the
 toolchain checkout:
 
 ```text
-scripts/talos/local-cluster-patches/defaults/
+cluster-patches/
 ├── cni.patch.yaml      # all node types (--config-patch)
 ├── cp.patch.yaml       # control-plane only (--config-patch-controlplanes)
 └── worker.patch.yaml   # workers only (--config-patch-workers)
 ```
+
+That directory is the single patch model shared with the day-1 `cluster.sh`
+lifecycle; it holds more files than the three a local cluster consumes. See
+`cluster-patches/README.md` for the full table.
 
 That model is never applied in place. `create --name=<name> --cni=cilium`
 materializes a copy into the destination cluster directory, and hands

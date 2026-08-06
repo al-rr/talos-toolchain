@@ -99,11 +99,15 @@ escrita a mao. Eles vem de um modelo padrao mantido, focado em Cilium, dentro
 do checkout do toolchain:
 
 ```text
-scripts/talos/local-cluster-patches/defaults/
+cluster-patches/
 ├── cni.patch.yaml      # todos os tipos de no (--config-patch)
 ├── cp.patch.yaml       # somente control-plane (--config-patch-controlplanes)
 └── worker.patch.yaml   # somente workers (--config-patch-workers)
 ```
+
+Esse diretorio e o modelo de patches unico, compartilhado com o ciclo de vida
+day-1 do `cluster.sh`; ele contem mais arquivos do que os tres consumidos por um
+cluster local. Veja `cluster-patches/README.md` para a tabela completa.
 
 Esse modelo nunca e aplicado no lugar. O `create --name=<nome> --cni=cilium`
 materializa uma copia no diretorio de destino do cluster e entrega ao

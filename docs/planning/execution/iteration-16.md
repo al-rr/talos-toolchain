@@ -2,7 +2,8 @@
 
 - Iteration: 16 — local cluster lifecycle contract (`talos-lab` as first consumer)
 - Repository: `talos-toolchain`
-- Status: `IMPLEMENTED` (pending independent review)
+- Status: `IMPLEMENTED` and committed; live-validated (pending independent
+  review of the committed range)
 - Base branch: `lab`
 - Baseline commit: `e66b26f1fd34b1db0b8aad2fa3a8905464838195`
 - Working branch: `fix/iteration-015-local-cilium-lifecycle`
@@ -29,8 +30,10 @@ is simply the first consumer. See "Deviations from the original task" below.
 
 - `scripts/talos/local-cluster.sh` — patch model wiring, `/readyz` gate,
   Colima logfmt socket parsing.
-- `scripts/talos/local-cluster-patches/defaults/{cni,cp,worker}.patch.yaml`
-  (new; untracked) — the maintained default patch model.
+- `cluster-patches/{cni,cp,worker}.patch.yaml` — the maintained patch model.
+  Landed first as `scripts/talos/local-cluster-patches/defaults/`; commit
+  `325fb81` moved it to the repository-root `cluster-patches/`, flat and
+  unversioned by cluster type, as the single model shared with `cluster.sh`.
 - `scripts/talos/phase-network-bringup.sh` — **modified** (OCI Helm chatter
   filter; see below). The original task assumed no change was needed here;
   that assumption was wrong.
@@ -66,14 +69,16 @@ is simply the first consumer. See "Deviations from the original task" below.
 
 ## Implementation handoff
 
-- Implementation commits: none; commits require separate owner authorization.
-  The entire iteration is an uncommitted working tree on
-  `fix/iteration-015-local-cilium-lifecycle`.
+- Implementation commits: the iteration landed on
+  `fix/iteration-015-local-cilium-lifecycle`, from `289f53a` through `6bdbe87`.
+  The working tree is clean. The list below describes the changes by theme, not
+  one entry per commit; several were refined by later fixes on the same branch
+  (notably `325fb81` for the patch-model move and `b2ada0c` for destroy safety).
 
-### Uncommitted changes included
+### Changes included
 
-1. **File-based patch model** (`local-cluster.sh`). `PATCH_TEMPLATE_DIR`
-   (`local-cluster-patches/defaults`) holds the maintained model;
+1. **File-based patch model** (`local-cluster.sh`). `PATCH_MODEL_DIR`
+   (`cluster-patches/`) holds the maintained model;
    `require_patch_template_project` validates it during cilium-mode preflight;
    `materialize_cluster_patch_project` copies it into
    `<cluster-dir>/patches/{cni,cp,worker}.patch.yaml` on first create and
@@ -181,7 +186,7 @@ the ones this tree actually produces.
   regression check).
 - `bash scripts/talos/tests/test-yaml-style.sh` — **not run**: `yamllint` is
   not installed on this host (pre-existing environment gap, unrelated to this
-  iteration; the tool does not reference `local-cluster-patches/`).
+  iteration; the tool does not reference the patch model directory).
 - No Docker, Colima, Talos, Helm, Kubernetes, registry, GitHub, VMware, or
   credential command was run, per scope.
 
@@ -300,35 +305,54 @@ three places, all of which the reviewer should judge explicitly:
 
 ### Known limitations
 
-- **The patch directory location is provisional and pending an owner
-  decision.** `scripts/talos/local-cluster-patches/defaults/` is not a
-  committed-to home; the owner has flagged intent to propose a better one, and
-  to give Helm values the same model→materialize treatment. Review of the
-  mechanism should not be read as acceptance of the path.
+- **The patch directory location is RESOLVED.** The owner settled on a flat,
+  repository-root `cluster-patches/` shared by both lifecycles; commit
+  `325fb81` moved it there from the provisional
+  `scripts/talos/local-cluster-patches/defaults/`. Giving Helm values the same
+  model→materialize treatment remains an open, separate intent.
 - The `cp.patch.yaml` / `worker.patch.yaml` patches are currently identical
   (host-DNS overrides only). They exist as separately maintained,
   correctly-scoped files even though their content does not yet diverge by
   role.
 - The Docker backend adaptation must remain environment-agnostic and must not
   claim VMware/VIP/hardware equivalence.
-- `local-cluster-patches/` and this record are untracked; a `git add` is
-  required before any commit so they are not silently lost.
+- `local-cluster.sh destroy` could not clean up after an interrupted create,
+  because the wrapper marker was written only after `talosctl cluster create
+  docker` returned. Fixed after the fact by commit `b2ada0c`, which claims the
+  cluster before creating it.
 
 ## Independent review
 
 - Reviewer: Codex
-- Exact commit reviewed: pending
-- Diff range: pending
+- Exact commit reviewed: pre-commit working tree (not the committed range)
+- Diff range: pending for `289f53a..6bdbe87`
 - Checks rerun: pending
-- Verdict: `PENDING`
-- Corrections requested: pending
-- Follow-up work: pending
+- Verdict: `CORRECTIONS_REQUIRED` — **rejected, see below**
+- Corrections requested: 1, not applied
+- Follow-up work: an independent review of the committed range is still owed.
+
+### The one requested correction was rejected as incorrect
+
+The review in `.agent-runs/iteration-016-20260804T092158Z-17681/review.md`
+asked for `--config-patch-controlplanes` / `--config-patch-workers` to be
+replaced with the singular `--config-patch-control-plane` /
+`--config-patch-worker`.
+
+That is backwards. `talosctl cluster create docker` takes the **plural**
+scoped flags; the singular forms belong to `talosctl gen config` and fail
+against `cluster create` in a way that looks silent, before any container is
+ever started. The plural forms in `local-cluster.sh` are correct and were
+kept. This is also confirmed empirically by the live validation recorded above,
+which created a working cluster using exactly these flags.
+
+The correction cycle never executed in any case — that run's `state` file
+reads `CLAUDE_AUTH_REQUIRED`, so no attempt was made to apply it.
 
 ## Owner decision
 
 - Accepted for local `lab`: pending
-- Patch directory location: pending (see Known limitations)
-- Live `create` authorization: pending
+- Patch directory location: decided — flat, repository-root `cluster-patches/`
+- Live `create` authorization: granted 2026-08-05; see "Live validation" above
 - Remote publication authorized: no
 - Notes: no alteration of `provision-talos-vsphere`,
   `talos-vsphere-gitops`, `talos-dev`, or the partial live `talos-lab` state.
