@@ -441,11 +441,26 @@ install_single_addon() {
     log_info "[DRY-RUN] helm template ${release_name} ${chart} --version ${version} --namespace ${namespace} --create-namespace -f ${values_file} > ${render_file}"
   else
     mkdir -p "${render_dir}"
+    # When the chart comes from an OCI registry, Helm prints its pull progress
+    # ("Pulled: <ref>" / "Digest: sha256:...") on stdout, ahead of the
+    # manifest. Left in place those lines parse as a leading YAML document
+    # with neither apiVersion nor kind, and the mandatory server-side dry-run
+    # below rejects the entire render with "apiVersion not set, kind not set"
+    # -- a confusing failure that has nothing to do with the chart. Strip that
+    # chatter, but only where it occurs (the very top), so no real manifest
+    # content can ever be dropped.
+    #
+    # This mirrors the identical filter in phase-network-bringup.sh. Day-1 was
+    # fixed and day-2 was not, so every oci:// addon here -- argocd, cilium,
+    # prometheus-stack -- failed before reaching the cluster.
     helm template "${release_name}" "${chart}" \
       --version "${version}" \
       --namespace "${namespace}" \
       --create-namespace \
-      -f "${values_file}" > "${render_file}"
+      -f "${values_file}" \
+      | awk 'BEGIN { in_header = 1 }
+             in_header && /^(Pulled|Digest): / { next }
+             { in_header = 0; print }' > "${render_file}"
     [[ -s "${render_file}" ]] || die "Rendered file is empty: ${render_file}"
   fi
 
