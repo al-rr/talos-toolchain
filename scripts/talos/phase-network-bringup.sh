@@ -387,10 +387,15 @@ main() {
     # -- a confusing failure that has nothing to do with the chart. Strip that
     # chatter, but only where it occurs (the very top), so no real manifest
     # content can ever be dropped.
+    # --include-crds keeps this render describing what the install actually
+    # creates: `helm template` skips a chart's crds/ directory by default while
+    # `helm upgrade --install` installs it, so without the flag the server-side
+    # dry-run validates a different manifest set than the one applied.
     helm template "${release_name}" "${chart}" \
       --version "${version}" \
       --namespace "${namespace}" \
       --create-namespace \
+      --include-crds \
       -f "${values_file}" \
       | awk 'BEGIN { in_header = 1 }
              in_header && /^(Pulled|Digest): / { next }
