@@ -56,6 +56,7 @@ KUBE_CONTEXT=""
 # cold image cache the Cilium image pulls, not Cilium itself, set the duration.
 CILIUM_ROLLOUT_TIMEOUT="900s"
 DRY_RUN="false"
+ALLOW_ARGOCD_MANAGED="false"
 KNOWN_WARNINGS_REGEX='(Warning: unrecognized format "int64"|warnings\.go:[0-9]+] "Warning: unrecognized format \\"int64\\"")'
 
 usage() {
@@ -80,6 +81,10 @@ Options:
   --cilium-rollout-timeout=<dur> Timeout for Cilium rollout wait when cilium CLI is unavailable (default: 900s).
                          Sized for a cold image cache; expiry is a timeout,
                          not a failed install.
+  --allow-argocd-managed         Install even when an Argo CD Application already
+                         manages the addon. Off by default: after handover, an
+                         imperative install fights Argo CD and fails on Helm
+                         ownership metadata. Prefer changing the GitOps repo.
   -n, --dry-run                  Print actions without executing
   -h, --help                     Show help
 
@@ -121,6 +126,7 @@ parse_args() {
       --kubeconfig=*) KUBECONFIG_PATH="${1#*=}"; shift ;;
       --kube-context=*) KUBE_CONTEXT="${1#*=}"; shift ;;
       --cilium-rollout-timeout=*) CILIUM_ROLLOUT_TIMEOUT="${1#*=}"; shift ;;
+      --allow-argocd-managed) ALLOW_ARGOCD_MANAGED="true"; shift ;;
       -n|--dry-run) DRY_RUN="true"; shift ;;
       -h|--help) usage; exit 0 ;;
       *) usage; die "Unknown argument: $1" ;;
@@ -203,6 +209,21 @@ release_exists() {
   env KUBECONFIG="${kubeconfig_file}" helm status "${release_name}" \
     --kube-context "${KUBE_CONTEXT}" \
     --namespace "${namespace}" >/dev/null 2>&1
+}
+
+# @description Reports whether Argo CD already owns this addon, by looking for
+#   the app-of-apps Application that manages it. The GitOps repository names
+#   these `addon-<name>` in the `argocd` namespace.
+# @arg $1 path Kubeconfig file.
+# @arg $2 name Addon name.
+# @exitcode 0 An Argo CD Application manages the addon.
+# @exitcode 1 It does not, or Argo CD is not installed yet.
+argocd_manages_addon() {
+  local kubeconfig_file="$1"
+  local addon="$2"
+
+  env KUBECONFIG="${kubeconfig_file}" kubectl --context="${KUBE_CONTEXT}" \
+    --namespace argocd get application "addon-${addon}" >/dev/null 2>&1
 }
 
 resolve_values_file_path() {
@@ -414,6 +435,20 @@ install_single_addon() {
 
   require_dir_path "${addon_dir}"
   require_file "${release_file}"
+
+  # Once the root app is deployed, Argo CD owns these addons. Installing one
+  # imperatively on top does not "repair" it -- Helm refuses to adopt objects
+  # Argo CD created, with "invalid ownership metadata ... missing key
+  # app.kubernetes.io/managed-by", and a partially-applied release is left
+  # behind. Cilium is protected by the static system-exclude list; every other
+  # addon was not, and re-running the day-2 flow after handover is exactly the
+  # thing an operator does when something looks wrong.
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    log_info "[DRY-RUN] would refuse if Argo CD Application addon-${addon} exists"
+  elif [[ "${ALLOW_ARGOCD_MANAGED}" != "true" ]] \
+    && argocd_manages_addon "${kubeconfig_file}" "${addon}"; then
+    die "Argo CD Application 'addon-${addon}' already manages this addon. Imperative install would fight it and fail on ownership metadata. Change the desired state in the GitOps repository instead, or pass --allow-argocd-managed if you have a reason to override."
+  fi
 
   release_name="$(read_release_field "${release_file}" "releaseName")"
   namespace="$(read_release_field "${release_file}" "namespace")"
