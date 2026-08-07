@@ -453,10 +453,21 @@ install_single_addon() {
     # This mirrors the identical filter in phase-network-bringup.sh. Day-1 was
     # fixed and day-2 was not, so every oci:// addon here -- argocd, cilium,
     # prometheus-stack -- failed before reaching the cluster.
+    # --include-crds keeps this render describing what the install actually
+    # creates. `helm template` skips a chart's crds/ directory by default while
+    # `helm upgrade --install` installs it, so without the flag the server-side
+    # dry-run below validates a different manifest set than the one that
+    # reaches the cluster (kube-prometheus-stack: 0 CRDs rendered versus 10).
+    #
+    # This closes a validation gap, not an install failure. First installs
+    # already skip the dry-run for this very reason, and re-installs pass
+    # because the CRDs exist by then. The value is that the dry-run now checks
+    # what will actually be applied.
     helm template "${release_name}" "${chart}" \
       --version "${version}" \
       --namespace "${namespace}" \
       --create-namespace \
+      --include-crds \
       -f "${values_file}" \
       | awk 'BEGIN { in_header = 1 }
              in_header && /^(Pulled|Digest): / { next }
