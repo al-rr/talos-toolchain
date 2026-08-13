@@ -28,6 +28,23 @@
 #   Docker backend supports exactly 1; any other value is rejected before
 #   talosctl is invoked (default 1).
 # @arg --workers int Worker node count for create (default 1).
+# @arg --memory-controlplanes string(mb,gb) Per-control-plane-node memory
+#   limit passed through to `talosctl cluster create docker
+#   --memory-controlplanes`. Omitted by default, which leaves talosctl's own
+#   default (2.0GiB) in effect. Measured need: the full lab addon set
+#   (cert-manager, Cilium, Longhorn, kube-prometheus-stack, Argo CD)
+#   installed together on a fresh cluster saturates the 2GiB default --
+#   sustained ~99% memory on the worker, kubelet losing/regaining Ready, and
+#   restart churn on argocd-server and longhorn-manager that is a resource
+#   symptom, not an addon config problem. See
+#   talos-vsphere-gitops/docs/en/day2-operations.md section 3.
+# @arg --memory-workers string(mb,gb) Per-worker-node memory limit, same
+#   passthrough and rationale as --memory-controlplanes.
+# @arg --cpus-controlplanes string Per-control-plane-node CPU share passed
+#   through to `talosctl cluster create docker --cpus-controlplanes`.
+#   Omitted by default (talosctl's own default, 2.0).
+# @arg --cpus-workers string Per-worker-node CPU share, same passthrough as
+#   --cpus-controlplanes.
 # @arg --cni name Local CNI mode for create: "flannel" (default, unchanged
 #   Talos-managed CNI) or "cilium" (Talos CNI is set to "none" and Cilium is
 #   bootstrapped day-1 from a local GitOps `lab` checkout).
@@ -79,6 +96,10 @@ CLUSTER_NAME=""
 STATE_ROOT_OVERRIDE=""
 CONTROLPLANES="1"
 WORKERS="1"
+MEMORY_CONTROLPLANES=""
+MEMORY_WORKERS=""
+CPUS_CONTROLPLANES=""
+CPUS_WORKERS=""
 CONFIRM_DESTROY="false"
 DRY_RUN="false"
 CNI_MODE="flannel"
@@ -138,6 +159,15 @@ Options:
   --controlplanes=<n>    Control-plane node count for create (default 1).
                          The Talos Docker backend supports exactly 1.
   --workers=<n>          Worker node count for create (default 1)
+  --memory-controlplanes=<val>  Per-control-plane memory limit (e.g. "4GB"),
+                         passed through to talosctl. Default: talosctl's own
+                         2.0GiB. Raise this if the addon set you install
+                         saturates memory -- see the day-2 GitOps repo's
+                         day2-operations.md section 3 for measured evidence.
+  --memory-workers=<val>       Per-worker memory limit, same as above.
+  --cpus-controlplanes=<val>   Per-control-plane CPU share (e.g. "4.0"),
+                         passed through to talosctl. Default: talosctl's own 2.0.
+  --cpus-workers=<val>         Per-worker CPU share, same as above.
   --cni=<mode>           Local CNI mode for create: "flannel" (default,
                          unchanged Talos-managed CNI) or "cilium" (Talos CNI
                          is set to "none"; Cilium is bootstrapped day-1 from
@@ -164,6 +194,8 @@ Examples:
   $(basename "$0") create --name=dev
   $(basename "$0") create --name=dev --cni=cilium --gitops-repo-root=../talos-vsphere-gitops --dry-run
   $(basename "$0") create --name=dev --cni=cilium --gitops-repo-root=../talos-vsphere-gitops
+  $(basename "$0") create --name=dev --cni=cilium --gitops-repo-root=../talos-vsphere-gitops \\
+    --memory-workers=4GB --memory-controlplanes=4GB
   $(basename "$0") status --name=dev
   $(basename "$0") destroy --name=dev --dry-run
   $(basename "$0") destroy --name=dev --confirm-destroy
@@ -182,6 +214,10 @@ parse_args() {
       --state-root=*) STATE_ROOT_OVERRIDE="${1#*=}"; shift ;;
       --controlplanes=*) CONTROLPLANES="${1#*=}"; shift ;;
       --workers=*) WORKERS="${1#*=}"; shift ;;
+      --memory-controlplanes=*) MEMORY_CONTROLPLANES="${1#*=}"; shift ;;
+      --memory-workers=*) MEMORY_WORKERS="${1#*=}"; shift ;;
+      --cpus-controlplanes=*) CPUS_CONTROLPLANES="${1#*=}"; shift ;;
+      --cpus-workers=*) CPUS_WORKERS="${1#*=}"; shift ;;
       --cni=*) CNI_MODE="${1#*=}"; shift ;;
       --gitops-repo-root=*) GITOPS_REPO_ROOT="${1#*=}"; shift ;;
       --docker-endpoint=*) DOCKER_ENDPOINT_OVERRIDE="${1#*=}"; shift ;;
@@ -847,6 +883,10 @@ do_create() {
     --talosconfig-destination "${TALOSCONFIG_PATH}"
     --workers "${WORKERS}"
   )
+  [[ -z "${MEMORY_CONTROLPLANES}" ]] || create_cmd+=(--memory-controlplanes "${MEMORY_CONTROLPLANES}")
+  [[ -z "${MEMORY_WORKERS}" ]] || create_cmd+=(--memory-workers "${MEMORY_WORKERS}")
+  [[ -z "${CPUS_CONTROLPLANES}" ]] || create_cmd+=(--cpus-controlplanes "${CPUS_CONTROLPLANES}")
+  [[ -z "${CPUS_WORKERS}" ]] || create_cmd+=(--cpus-workers "${CPUS_WORKERS}")
   if [[ "${CNI_MODE}" == "cilium" ]]; then
     create_cmd+=(
       --config-patch "@${CLUSTER_CNI_PATCH}"

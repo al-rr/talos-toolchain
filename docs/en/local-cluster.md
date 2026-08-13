@@ -74,6 +74,37 @@ rejected before any path is built or any directory is created.
   no marker is written or read for a destructive decision, and no external
   command runs.
 
+## Sizing a node above talosctl's 2GiB default
+
+`--memory-controlplanes`, `--memory-workers`, `--cpus-controlplanes`,
+`--cpus-workers` pass straight through to `talosctl cluster create docker`.
+Omitted, talosctl's own defaults apply (2.0GiB, 2.0 CPUs per node) — this
+wrapper does not second-guess them.
+
+Raise them before installing the full lab addon set (cert-manager, Cilium,
+Longhorn, kube-prometheus-stack, Argo CD) on a fresh cluster. Measured
+2026-08-13: at the 2GiB default, the worker node sustained ~99% memory and
+~200% CPU with all five installing concurrently, `kubelet` intermittently
+lost and regained `Ready` (`PLEG is not healthy`), and `argocd-server` /
+`longhorn-manager` both showed restart churn that was a resource symptom, not
+an addon config problem — it stopped entirely at `--memory-workers=6GB
+--memory-controlplanes=4GB --cpus-workers=4.0 --cpus-controlplanes=2.0`, worker
+memory settling around 45%. Available Colima VM memory does not help by
+itself: this limit is a Docker cgroup on the node container that talosctl
+sets, independent of how much the Colima VM has free.
+
+```bash
+./scripts/talos/local-cluster.sh create --name=talos-lab --cni=cilium \
+  --gitops-repo-root=../talos-vsphere-gitops \
+  --memory-controlplanes=4GB --memory-workers=6GB \
+  --cpus-controlplanes=2.0 --cpus-workers=4.0
+```
+
+See `talos-vsphere-gitops/docs/en/day2-operations.md` §3 for the addon-level
+evidence (before this fix, that section attributed all container-profile
+churn to CPU and `redis-ha` scheduling; the 2GiB memory ceiling was a
+separate, additional cause only visible once every addon installs at once).
+
 ## Cilium local mode
 
 `create --cni=cilium --gitops-repo-root=<path>` replaces the default

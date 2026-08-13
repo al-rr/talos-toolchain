@@ -74,6 +74,39 @@ offline; nao e necessario no uso normal do operador). Nomes contendo `..` ou
   criado, nenhuma marca e escrita ou usada para uma decisao destrutiva, e
   nenhum comando externo e executado.
 
+## Dimensionando um no acima do default de 2GiB do talosctl
+
+`--memory-controlplanes`, `--memory-workers`, `--cpus-controlplanes`,
+`--cpus-workers` sao repassados direto para `talosctl cluster create docker`.
+Se omitidos, valem os defaults do proprio talosctl (2.0GiB, 2.0 CPUs por no)
+— este wrapper nao questiona esses valores.
+
+Aumente-os antes de instalar o conjunto completo de addons do lab
+(cert-manager, Cilium, Longhorn, kube-prometheus-stack, Argo CD) num cluster
+recem-criado. Medido em 2026-08-13: no default de 2GiB, o no worker sustentou
+~99% de memoria e ~200% de CPU com os cinco instalando ao mesmo tempo, o
+`kubelet` perdeu e recuperou `Ready` intermitentemente (`PLEG is not
+healthy`), e tanto `argocd-server` quanto `longhorn-manager` mostraram
+reinicios em cadeia que eram sintoma de recurso, nao problema de config de
+addon — parou completamente com `--memory-workers=6GB
+--memory-controlplanes=4GB --cpus-workers=4.0 --cpus-controlplanes=2.0`, a
+memoria do worker estabilizando perto de 45%. A memoria disponivel na VM do
+Colima nao ajuda sozinha: esse limite e um cgroup Docker no container do no
+que o talosctl define, independente de quanto a VM do Colima tem livre.
+
+```bash
+./scripts/talos/local-cluster.sh create --name=talos-lab --cni=cilium \
+  --gitops-repo-root=../talos-vsphere-gitops \
+  --memory-controlplanes=4GB --memory-workers=6GB \
+  --cpus-controlplanes=2.0 --cpus-workers=4.0
+```
+
+Ver `talos-vsphere-gitops/docs/pt-br/day2-operations.md` secao 3 para a
+evidencia no nivel de addon (antes desta correcao, aquela secao atribuia toda
+a instabilidade do perfil container a CPU e ao agendamento do `redis-ha`; o
+teto de memoria de 2GiB era uma causa separada, adicional, so visivel quando
+todos os addons instalam de uma vez).
+
 ## Modo local Cilium
 
 `create --cni=cilium --gitops-repo-root=<path>` substitui o Flannel
