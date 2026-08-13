@@ -230,8 +230,20 @@ main() {
   fi
 
   # 2) Rendered Cilium identity: chart, version, release name, namespace.
+  #
+  # The Argo CD Application's repoURL deliberately omits the oci:// scheme
+  # (see the comment in talos-vsphere-gitops's argocd/apps/cilium.yaml: with
+  # the prefix, Argo CD treats the value as the complete OCI artifact
+  # reference and never appends `chart`, so quay.io answers 401 instead of
+  # 404 for the resulting bad path). day-1's release.yaml needs the opposite
+  # convention -- a single string `helm pull`/`helm template` can resolve on
+  # its own -- so it keeps the scheme. Both name the same real artifact;
+  # strip the scheme from whichever side has it before comparing, so this
+  # deliberate day-1/day-2 formatting difference is not reported as drift.
   expected_chart="${chart_repo%/}/${chart_name}"
-  if [[ "${day1_chart}" != "${expected_chart}" ]]; then
+  day1_chart_noscheme="${day1_chart#oci://}"
+  expected_chart_noscheme="${expected_chart#oci://}"
+  if [[ "${day1_chart_noscheme}" != "${expected_chart_noscheme}" ]]; then
     failures+=("chart mismatch: day-1='${day1_chart}' gitops='${expected_chart}'")
   fi
   if [[ "${day1_version}" != "${chart_version}" ]]; then

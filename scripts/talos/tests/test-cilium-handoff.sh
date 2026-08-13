@@ -64,6 +64,14 @@ assert_validator_fails_with() {
 }
 
 assert_validator_ok "consistent"
+# talos-vsphere-gitops commit 4116376 deliberately dropped the oci:// scheme
+# from the real cilium.yaml's repoURL (quay.io answers 401, not 404, for a
+# malformed OCI reference otherwise). This fixture mirrors that real shape --
+# day-1's release.yaml keeps the scheme, gitops's repoURL does not -- and
+# caught a real bug: the validator compared the two raw strings and failed
+# every real run with "chart mismatch" until the scheme was stripped from
+# both sides before comparing.
+assert_validator_ok "consistent-no-oci-scheme"
 assert_validator_fails_with "mismatch-revision" "environment revision mismatch"
 assert_validator_fails_with "mismatch-chart-version" "chart version mismatch"
 assert_validator_fails_with "mismatch-values" "values content mismatch"
